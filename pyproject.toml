@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-relay-cli"
+version = "0.1.0"
+description = "Pass unfinished coding tasks between collaborators' local agents."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "Apache-2.0"}
+authors = [{name = "PittsIrv"}]
+dependencies = []
+classifiers = ["Development Status :: 3 - Alpha", "Programming Language :: Python :: 3", "Operating System :: POSIX"]
+
+[project.urls]
+Repository = "https://github.com/PittsIrv/agent-relay"
+Issues = "https://github.com/PittsIrv/agent-relay/issues"
+
+[project.scripts]
+relay = "agent_relay.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
