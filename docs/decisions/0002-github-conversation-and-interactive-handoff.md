@@ -277,3 +277,20 @@ Gemini
 - 3.1 Pop vs explicit `None` → **disagree**: absent keys are the existing state convention.
 - 4.1 Branch name after a mid-hold merge → **agree, minor**: the hand-off message names the new task.
 - 4.2 Note on the PR, not the issue → **by design**: it tells the PR's readers why it closed.
+
+## Ninth independent review — 2026-11-06 (gpt-6-astra medium, gemini-3.1-pro-preview)
+
+Full text: `docs/reviews/2026-11-06-v0.2-fixes-8.review.md` and `.gemini.review.md`.
+GPT verdict: "do not ship"; Gemini verdict: "ship". Adjudication:
+
+GPT
+- 1.1 The refresh kept stale values for absent keys → **agree**, fixed: absent hold records read as empty. Test added.
+- 1.2 Check-then-close race on a restored PR → **disagree, with evidence**: since the sixth round nothing restores a PR. Every retirement records the PR in `past_prs` first (`retire_pr`, or `attach_pr` refusing a stale PR), and `attach_pr` refuses any number in `past_prs` forever, so "not the current PR" cannot flip back between the read and the close. A take keeps the PR linked, so it is never a retirement candidate while held. The code comment now states this invariant.
+- 1.3 Retirement ran after issue adoption and PR creation → **agree**, fixed: it now runs at the very start of a flush.
+- 1.4 Close isolation caught only `RelayError` → **agree**, fixed: each close catches every deferrable error type. Test injects an `OSError` on the first of two closes.
+- 2.2 Persistent `pull` failures assumed transient → **agree, accepted**: a lost credential surfaces as a deferred update every flush, which is the right signal.
+- 3.2 Separate retirement pass → **done** within the flush (1.3).
+- 3.3 Note failures stall narration → **disagree**: only in an outage that also stalls narration; the note is retried with it.
+- 5.2 Excerpt placed methods under the exception class → **agree**: a packaging artifact; the next package names the enclosing class.
+
+Gemini: "ship"; no new findings beyond those above.

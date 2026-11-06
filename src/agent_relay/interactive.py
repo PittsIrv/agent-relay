@@ -79,7 +79,7 @@ def one_at_a_time(repo):
 def _local_state(repo):
     """The clone's hold bookkeeping, read fresh."""
     fresh = config.load(repo)
-    return {k: fresh[k] for k in ("held", "handed_off") if k in fresh}
+    return {k: fresh.get(k) or {} for k in ("held", "handed_off")}  # Absent means empty.
 
 
 def handoff(repo, cfg, store, **kwargs):

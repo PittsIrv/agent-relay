@@ -2,7 +2,7 @@
 
 ## Automated (every CI run)
 
-63 tests on temporary bare Git remotes, independent clones, real child processes,
+65 tests on temporary bare Git remotes, independent clones, real child processes,
 fake agents and an offline `gh` stand-in (`agent_relay/fake_gh.py`). They never
 spend provider quota or write to GitHub.
 
@@ -103,6 +103,11 @@ Regressions for the eighth review:
 - Two pending retirements both close even when the first PR's thread is capped.
 - A hand-off using configuration loaded before a take still returns the held task.
 - The offline stand-in keeps the label filter when listing issues in all states.
+
+Regressions for the ninth review:
+
+- A failed close of one superseded PR does not stop the next; it is retried later.
+- Hold records missing from the clone's configuration read as empty, never stale.
 
 `relay demo` runs the headline scenario end to end.
 

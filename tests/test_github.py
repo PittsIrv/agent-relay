@@ -464,6 +464,33 @@ class GitHubConversationTests(unittest.TestCase):
             self.talk(self.a).flush(self.store.read()[1]["tasks"][task["id"]])
         self.assertEqual([self.db()["pulls"][str(n)]["state"] for n in (first, second)], ["closed", "closed"])
 
+    def test_a_failed_close_does_not_stop_the_next_one(self):
+        task = self.add()
+        alice = config.load(self.a)["worker"]
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        first = self.store.read()[1]["tasks"][task["id"]]["pr"]
+        tasks.retry(self.store, task["id"], worker=alice, by="alice")
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        second = self.store.read()[1]["tasks"][task["id"]]["pr"]
+        tasks.retry(self.store, task["id"], worker=alice, by="alice")
+        talk = self.talk(self.a)
+        real = talk.gh.close_pr
+        def flaky(number):
+            if number == first:
+                raise OSError("connection reset")
+            return real(number)
+        talk.gh.close_pr = flaky
+        talk.flush(self.store.read()[1]["tasks"][task["id"]])
+        self.assertEqual([self.db()["pulls"][str(n)]["state"] for n in (first, second)], ["open", "closed"])
+        self.talk(self.a).flush(self.store.read()[1]["tasks"][task["id"]])  # Retried later.
+        self.assertEqual(self.db()["pulls"][str(first)]["state"], "closed")
+
+    def test_hold_records_absent_from_config_read_as_empty(self):
+        cfg = config.load(self.a)
+        stale = {**cfg, "held": {"relay/gone": "gone"}}
+        config.save(self.a, {k: v for k, v in cfg.items() if k not in ("held", "handed_off")})
+        self.assertEqual({**stale, **interactive._local_state(self.a)}["held"], {})
+
     def test_handoff_with_config_loaded_before_a_take_keeps_the_hold(self):
         task = self.add()
         mock(self.b, "finish-fresh", emit=quiet).run(once=True)

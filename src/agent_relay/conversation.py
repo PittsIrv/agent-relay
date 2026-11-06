@@ -19,6 +19,7 @@ MARKER = "<!-- relay:{task}:{n} -->"
 OWNED = "<!-- relay-task:{task} -->"
 RETIRED = "<!-- relay-retired:{task}:{pr} -->"
 SILENT = {"checkpoint", "created"}
+DEFERRABLE = (RelayError, OSError, ValueError, KeyError, TypeError)  # Retried on a later flush.
 VERBS = ("note", "retry", "cancel")
 
 
@@ -159,7 +160,7 @@ class Conversation:
         try:
             state = state or self.store.read()[1]
             return self._flush(task, state)
-        except (RelayError, OSError, ValueError, KeyError, TypeError) as exc:
+        except DEFERRABLE as exc:
             self.emit(f"GitHub update deferred: {exc}")
             return task
 
@@ -167,6 +168,16 @@ class Conversation:
         with (self.folder / "conversation.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             posted = set(self._load("posted.json", []))
+            # Close superseded PRs before anything else, each on its own: that is safety work and
+            # must not wait on issue adoption, PR creation, comment checks or another PR's failure.
+            retired = [ev["retired_pr"] for ev in task["events"] if ev.get("retired_pr")
+                       and ev.get("worker") == self.worker and f"{task['id']}:{ev.get('n')}" not in posted]
+            failures = []
+            for number in retired:
+                try:
+                    self._close_superseded(number, task)
+                except DEFERRABLE as exc:
+                    failures.append(exc)
             if task.get("issue") is None:
                 if task.get("created_by") != self.worker:
                     return task
@@ -182,21 +193,12 @@ class Conversation:
                     task = self._open_pr(task, state)
             pending = [ev for ev in task["events"] if ev.get("worker") == self.worker and ev.get("n")
                        and ev["kind"] not in SILENT and f"{task['id']}:{ev['n']}" not in posted]
-            # Close superseded PRs first, each on its own: that is safety work, and must not wait
-            # on comment checks or on another PR's failure. Notes follow.
-            retired = [ev["retired_pr"] for ev in pending if ev.get("retired_pr")]
-            failures = []
-            for number in retired:
-                try:
-                    self._close_superseded(number, task)
-                except RelayError as exc:
-                    failures.append(exc)
             for number in retired:
                 try:
                     self._note_superseded(number, task)
                 except Truncated:
                     pass  # A thread too long to check for the note: skip the courtesy note.
-                except RelayError as exc:
+                except DEFERRABLE as exc:
                     failures.append(exc)
             if failures:
                 raise failures[0]  # Defer this task's narration; closes already done stay done.
@@ -240,7 +242,9 @@ class Conversation:
         """Close a superseded attempt's PR so its `Closes #N` cannot close the live issue."""
         current = self.store.read()[1]["tasks"].get(task["id"]) or {}
         if current.get("pr") == number:
-            return  # Still the current PR (for example during a reversible take): never close it.
+            # Still the current PR (for example during a reversible take): never close it. Once a PR
+            # is retired it sits in past_prs and attach_pr refuses it forever, so this cannot flip.
+            return
         pull = self.gh.pull(number) or {}
         if pull.get("state") == "open" and not pull.get("merged"):
             self.gh.close_pr(number)
