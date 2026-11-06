@@ -233,3 +233,24 @@ Gemini
 - 2.2 String return of `attach_pr` → **already handled**: it returns a boolean.
 - 3.1 `pr_epoch` rebinding hard to verify → **agree**: replaced by restoring the held attempt's epoch.
 - 3.2 / 4.1 Double fetch and offline rollback → **disagree / documented** (runbook above).
+
+## Seventh independent review — 2026-11-06 (gpt-6-astra medium, gemini-3.1-pro-preview)
+
+Full text: `docs/reviews/2026-11-06-v0.2-fixes-6.review.md` and `.gemini.review.md`.
+GPT verdict: "do not ship"; Gemini verdict: "ship". Adjudication:
+
+GPT
+- 1.1 Hand-back without an attached PR inherits the old check result → **agree**, fixed: a new checkpoint clears any stored check result unless one is recorded with it. End-to-end handoff test added.
+- 1.2 Restoring the epoch reuses lease identities → **agree**, fixed as GPT proposes (3.1): epochs are monotonic again; a separate `result_epoch` names the attempt whose review result and PR are current, and survives a reversible take. Test: an old hold token matches nothing after rollback and re-take.
+- 1.3 A capped issue thread blocks closing superseded PRs → **agree**, fixed: retirements run before the comment-marker scan. Test added.
+- 1.4 Issue adoption misses a closed orphan → **agree in part**, fixed for closed issues (search all states); an orphan whose label was removed by hand is an accepted limit.
+- 2.1 / 5.1 Concurrent interactive commands in one clone → **agree**, fixed: `take`, `handoff` and the hook share a per-clone lock.
+- 3.3 Retirement independent of comment dedupe → **agree**, done (1.3); a shared queue stays out of scope.
+- 4.4 Delayed-GitHub two-worker trace → **open**.
+- 5.4 Pagination exceptions contained → **already true**: `flush` catches per task and `flush_all` calls it per task; import and command sync never raise on the cap.
+
+Gemini
+- 1.1 One capped thread starves other tasks → **already contained** (see 5.4 above).
+- 1.2 Handing back after the PR merged mid-hold creates a new task → **agree, by design**: the work is new; the hand-off now says so.
+- 3.1 `relay unhold --force` → **disagree for now**: cancel then retry is explicit and documented.
+- 3.2 Double fetch → **disagree**, as before.

@@ -82,7 +82,8 @@ def route(db, method, path, query, body, login):
         return 201, issue
     if sub == "/issues" and method == "GET":
         label = query.get("labels")
-        return 200, [i for i in db["issues"].values() if i["state"] == query.get("state", "open")
+        wanted = query.get("state", "open")
+        return 200, [i for i in db["issues"].values() if wanted == "all" or i["state"] == wanted
                      and (not label or any(l["name"] == label for l in i["labels"]))]
     found = re.fullmatch(r"/issues/(\d+)/comments", sub)
     if found and method == "POST":

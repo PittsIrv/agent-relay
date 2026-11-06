@@ -38,8 +38,11 @@ tasks. An expired running lease is reclaimable; a held one is not. `cancel` drop
 the lease, so a running worker stops at its next heartbeat and keeps its files
 locally. `review` is not a claim of successful implementation.
 
-Each claim increments an epoch. Updates must match worker ID, epoch, and an
-unexpired lease. After reassignment an old worker cannot overwrite canonical task
+Each claim or take increments an epoch, and epochs never go back. Updates must
+match worker ID, epoch, and an unexpired lease. Separately, the task records which
+attempt's review result is current; that attempt alone may attach a PR or complete
+the task, also while a person holds it. A new checkpoint clears any earlier check
+result. After reassignment an old worker cannot overwrite canonical task
 state. It may already have pushed to its own attempt branch; that branch is never
 merged or selected automatically.
 
@@ -145,7 +148,8 @@ checkpoint is saved and `snapshot_changed_during_check` is true.
 Known bounds: comment sync and issue import read at most 2,000 items per call;
 past that, commands can be missed and issues are not imported. Duplicate checks
 (comment markers, issue adoption) refuse to act on a truncated list and defer
-instead. A task stuck in `held` because its holder crashed is
+instead; closing superseded PRs runs before those checks and is never blocked by them.
+`take`, `handoff` and the hook run one at a time per clone. A task stuck in `held` because its holder crashed is
 freed with `relay cancel` then `relay retry`; this starts a new attempt, so any
 earlier PR is closed as superseded and its check result is dropped.
 

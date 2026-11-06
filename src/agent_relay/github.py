@@ -126,8 +126,8 @@ class GitHub:
     def pull(self, number):
         return self.api("GET", self.repo(f"/pulls/{number}"))
 
-    def labeled_issues(self, label="relay", complete=False):
-        issues = self.pages(self.repo("/issues"), complete=complete, labels=label, state="open")
+    def labeled_issues(self, label="relay", complete=False, state="open"):
+        issues = self.pages(self.repo("/issues"), complete=complete, labels=label, state=state)
         return [issue for issue in issues if "pull_request" not in issue]
 
     def comments_since(self, since):

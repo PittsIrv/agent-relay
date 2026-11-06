@@ -1,5 +1,7 @@
 """Hand off and take back work from a person's own interactive coding session."""
 
+import contextlib
+import fcntl
 import json
 import shlex
 import sys
@@ -64,9 +66,24 @@ def compose_prompt(repo, owner, branch, base, tree, message, shared_prompt):
     return "\n\n".join(parts)
 
 
-def handoff(repo, cfg, store, *, message=None, review=False, reason=None, agent="session",
-            hook=None, emit=print):
+@contextlib.contextmanager
+def one_at_a_time(repo):
+    """Take, hand-off and the hook never interleave within one clone."""
+    folder = private_dir(repo)
+    folder.mkdir(parents=True, exist_ok=True)
+    with (folder / "interactive.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def handoff(repo, cfg, store, **kwargs):
     """Snapshot this clone's working tree (index and HEAD untouched) and publish it as a task."""
+    with one_at_a_time(repo):
+        return _handoff(repo, cfg, store, **kwargs)
+
+
+def _handoff(repo, cfg, store, *, message=None, review=False, reason=None, agent="session",
+             hook=None, emit=print):
     remote = cfg["remote"]
     branch = current_branch(repo)
     who = label(cfg, agent)
@@ -77,6 +94,8 @@ def handoff(repo, cfg, store, *, message=None, review=False, reason=None, agent=
     _, state = store.read()
     task = state["tasks"].get(held) if held else None
     if task and not (task["status"] == "held" and task["lease"] and task["lease"]["worker"] == cfg["worker"]):
+        if task["status"] == "done":
+            emit(f"{task['id']} was completed while you held it (its PR merged); publishing your work as a new task.")
         task = None  # Someone released or took it in the meantime; publish fresh work instead.
     if task is None and branch and hook:
         previous = (cfg.get("handed_off") or {}).get(branch)
@@ -130,6 +149,11 @@ def handoff(repo, cfg, store, *, message=None, review=False, reason=None, agent=
 
 
 def take(repo, cfg, store, task_id, emit=print):
+    with one_at_a_time(repo):
+        return _take(repo, cfg, store, task_id, emit)
+
+
+def _take(repo, cfg, store, task_id, emit=print):
     """Hold a task for interactive work and check out its latest checkpoint on a local branch."""
     if output(repo, "status", "--porcelain"):
         raise RelayError("Commit or stash your local changes before taking a task")

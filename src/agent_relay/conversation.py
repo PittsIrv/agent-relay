@@ -172,23 +172,25 @@ class Conversation:
                     return task
                 owned = OWNED.format(task=task["id"])
                 # Adopt an issue that was created before a crash or timeout instead of opening another.
-                existing = next((i["number"] for i in self.gh.labeled_issues(complete=True) if owned in (i.get("body") or "")), None)
+                existing = next((i["number"] for i in self.gh.labeled_issues(complete=True, state="all") if owned in (i.get("body") or "")), None)
                 number = existing or self.gh.create_issue(title(task), self.issue_body(task))
                 task = tasks.annotate(self.store, task["id"], issue=number)
                 self.emit(f"{'Adopted' if existing else 'Opened'} issue #{task['issue']} for {task['id']}")
             if task["status"] == "review" and task.get("pr") is None and task.get("checkpoint"):
                 last = next((ev for ev in reversed(task["events"]) if ev["kind"] == "review"), None)
-                if last and last.get("worker") == self.worker and last.get("epoch") == task["epoch"]:
+                if last and last.get("worker") == self.worker and last.get("epoch") == tasks.current_result(task):
                     task = self._open_pr(task, state)
             pending = [ev for ev in task["events"] if ev.get("worker") == self.worker and ev.get("n")
                        and ev["kind"] not in SILENT and f"{task['id']}:{ev['n']}" not in posted]
+            # Close superseded PRs first: that is safety work, and must not wait on comment checks.
+            for ev in pending:
+                if ev.get("retired_pr"):
+                    self._retire(ev["retired_pr"], task)
             if pending:
                 # A crash between posting and recording must not post twice: check the thread itself.
                 remote = "\n".join(c.get("body") or "" for c in self.gh.issue_comments(task["issue"]))
                 for ev in pending:
                     marker = MARKER.format(task=task["id"], n=ev["n"])
-                    if ev.get("retired_pr"):
-                        self._retire(ev["retired_pr"], task)
                     body = self.render(task, ev, state)
                     if body and marker not in remote:
                         self.gh.comment(task["issue"], body + "\n" + marker)
@@ -197,7 +199,7 @@ class Conversation:
             return task
 
     def _open_pr(self, task, state):
-        cp, epoch = task["checkpoint"], task["epoch"]
+        cp, epoch = task["checkpoint"], tasks.current_result(task) or task["epoch"]
         try:
             existing = self.gh.find_pr(cp["branch"])  # Created before a crash: adopt, never duplicate.
             if existing:

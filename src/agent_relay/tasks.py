@@ -77,9 +77,18 @@ def retire_pr(task):
     if old:
         task.setdefault("past_prs", []).append({"pr": old, "epoch": task.get("pr_epoch")})
     task["pr"] = None
-    for key in ("verification", "pr_epoch", "pr_draft"):
+    for key in ("verification", "pr_epoch", "pr_draft", "result_epoch"):
         task.pop(key, None)
     return old
+
+
+def current_result(task):
+    """The attempt whose review result (and PR) is current. A reversible take keeps it, so the
+    epoch itself stays a monotonic fencing token and is never restored."""
+    held = task["status"] == "held" and (task.get("held_from") or {}).get("status") == "review"
+    if task["status"] == "review" or held:
+        return task.get("result_epoch", (task.get("held_from") or {}).get("epoch", task["epoch"]))
+    return None
 
 
 def facts(task):
@@ -138,6 +147,8 @@ def hold(store, task_id, worker, by=None, now=None):
         # A hold is reversible until the person hands work back, so its PR stays linked (and
         # protected from retirement) until then; only the status is restored if taking fails.
         task["held_from"] = {"status": task["status"], "epoch": task["epoch"]}
+        if task["status"] == "review":
+            task.setdefault("result_epoch", task["epoch"])
         task["epoch"] += 1
         task["status"] = "held"
         task["lease"] = {"worker": worker, "epoch": task["epoch"], "until": current + HELD_FOREVER, "human": True}
@@ -153,14 +164,10 @@ def unhold(store, task_id, worker, epoch, by=None):
         lease = task and task.get("lease")
         if not lease or lease["worker"] != worker or lease["epoch"] != epoch or task["status"] != "held":
             raise LeaseLost("Task is no longer held by this clone")
-        previous = task.pop("held_from", None) or {"status": "queued"}
-        if previous["status"] == "running":
-            task["status"] = "queued"  # Its lease had already expired; the task is reclaimable.
-        else:
-            # Nothing held a lease at the earlier epoch and the hold published nothing, so the
-            # earlier attempt's in-flight PR publication stays valid.
-            task["status"] = previous["status"]
-            task["epoch"] = previous.get("epoch", task["epoch"])
+        previous = (task.pop("held_from", None) or {}).get("status", "queued")
+        # An expired running task was reclaimable anyway. The epoch is not restored; the held
+        # attempt's result stays current through result_epoch.
+        task["status"] = "queued" if previous == "running" else previous
         task["lease"] = None
         event(task, "released", worker=worker, by=by, epoch=epoch, restored=task["status"])
         return copy.deepcopy(task)
@@ -178,11 +185,8 @@ def attach_pr(store, task_id, epoch, number, draft, worker=None):
             return "attached"  # Already the current PR (a repeat).
         if any(p.get("pr") == number for p in task.get("past_prs", [])):
             return "superseded"  # Retirement is terminal.
-        held = task["status"] == "held" and task.get("held_from") or {}
-        # During a reversible take, the attempt being held may still publish its PR.
-        current = (task["status"] == "review" and task["epoch"] == epoch) or (
-            held.get("status") == "review" and held.get("epoch") == epoch)
-        if not current or task.get("pr") is not None:
+        # Only the attempt whose result is current may publish, also during a reversible take.
+        if current_result(task) != epoch or task.get("pr") is not None:
             if not any(p.get("pr") == number for p in task.get("past_prs", [])):
                 task.setdefault("past_prs", []).append({"pr": number, "epoch": epoch})
                 event(task, "superseded", worker=worker, epoch=epoch, retired_pr=number)
@@ -221,6 +225,8 @@ def update(store, task_id, worker, epoch, *, ttl=300, checkpoint=None, status=No
             task["base"] = base
         if checkpoint is not None:
             task["checkpoint"] = checkpoint
+            if verification is None:
+                task.pop("verification", None)  # A check result belongs to the checkpoint it ran on.
             event(task, "checkpoint", worker=worker, sha=checkpoint["sha"], epoch=epoch)
         # New work from a later attempt supersedes an earlier attempt's PR, irreversibly; retire
         # it before recording this attempt's own check result.
@@ -231,6 +237,10 @@ def update(store, task_id, worker, epoch, *, ttl=300, checkpoint=None, status=No
             task["status"] = status
             task["lease"] = None
             task.pop("held_from", None)
+            if status == "review":
+                task["result_epoch"] = epoch
+            else:
+                task.pop("result_epoch", None)
             check = (task.get("verification") or {}) if status == "review" else {}
             event(task, kind or status, reason=reason or "", worker=worker, by=by, epoch=epoch,
                   check=check.get("result"), changed_during_check=check.get("snapshot_changed_during_check"),
@@ -304,10 +314,8 @@ def mark_done(store, task_id, pr, worker=None):
         task = state["tasks"].get(task_id)
         if not task or task.get("pr") != pr:
             return None
-        held = task["status"] == "held" and task.get("held_from") or {}
         # A PR merged while its task was taken still completes it; the holder's branch stays local.
-        if not ((task["status"] == "review" and task.get("pr_epoch") == task["epoch"]) or
-                (held.get("status") == "review" and task.get("pr_epoch") == held.get("epoch"))):
+        if task.get("pr_epoch") is None or task.get("pr_epoch") != current_result(task):
             return None
         task["status"] = "done"
         task["lease"] = None

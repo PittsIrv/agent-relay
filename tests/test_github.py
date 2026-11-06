@@ -320,7 +320,7 @@ class GitHubConversationTests(unittest.TestCase):
         pr = self.store.read()[1]["tasks"][task["id"]]["pr"]
         self.failing_take(self.a, task["id"])
         after = self.store.read()[1]["tasks"][task["id"]]
-        self.assertEqual((after["status"], after["pr"], after["pr_epoch"]), ("review", pr, after["epoch"]))
+        self.assertEqual((after["status"], after["pr"], after["pr_epoch"]), ("review", pr, tasks.current_result(after)))
         self.talk(self.a).flush(after)  # The rolled-back hold must not close the restored PR.
         self.assertEqual(self.db()["pulls"][str(pr)]["state"], "open")
         self.edit_db(lambda db: db["pulls"][str(pr)].update(merged=True))
@@ -364,7 +364,8 @@ class GitHubConversationTests(unittest.TestCase):
         self.talk(self.b)._open_pr(stale, self.store.read()[1])  # Lands mid-take.
         tasks.unhold(self.store, stale["id"], "alice-desk", held["epoch"])
         after = self.store.read()[1]["tasks"][stale["id"]]
-        self.assertEqual((after["status"], after["epoch"]), ("review", stale["epoch"]))
+        self.assertEqual((after["status"], after["epoch"]), ("review", stale["epoch"] + 1), "epochs never go back")
+        self.assertEqual(tasks.current_result(after), stale["epoch"])
         self.assertEqual(self.db()["pulls"][str(after["pr"])]["state"], "open")
         self.edit_db(lambda db: db["pulls"][str(after["pr"])].update(merged=True))
         self.assertEqual(self.talk(self.a).sync("main")["done"], [stale["id"]])
@@ -413,6 +414,39 @@ class GitHubConversationTests(unittest.TestCase):
         with patch("agent_relay.github.MAX_PAGES", 1):
             with self.assertRaisesRegex(Exception, "not risking a duplicate"):
                 self.talk(self.a).gh.issue_comments(task["issue"])
+
+    def test_handing_back_new_work_never_inherits_an_old_check(self):
+        stale = self.review_without_pr()
+        self.assertIsNotNone(stale.get("verification"))
+        interactive.take(self.a, config.load(self.a), Store(self.a), stale["id"], emit=quiet)
+        (self.a / "answer.py").write_text("def answer():\n    return 43\n")
+        back = interactive.handoff(self.a, config.load(self.a), Store(self.a), review=True, emit=quiet)
+        self.assertIsNone(back.get("verification"))
+        self.assertIsNone([ev for ev in back["events"] if ev["kind"] == "review"][-1]["check"])
+
+    def test_a_rolled_back_hold_token_never_matches_a_later_hold(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        first = tasks.hold(self.store, task["id"], "alice-desk")
+        tasks.unhold(self.store, task["id"], "alice-desk", first["epoch"])
+        second = tasks.hold(self.store, task["id"], "alice-desk")
+        self.assertGreater(second["epoch"], first["epoch"])
+        with self.assertRaises(tasks.LeaseLost):
+            tasks.unhold(self.store, task["id"], "alice-desk", first["epoch"])
+        with self.assertRaises(tasks.LeaseLost):
+            tasks.update(self.store, task["id"], "alice-desk", first["epoch"], status="queued")
+
+    def test_a_capped_thread_does_not_block_closing_a_superseded_pr(self):
+        from unittest.mock import patch
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        old = self.store.read()[1]["tasks"][task["id"]]["pr"]
+        for i in range(130):
+            self.comment(task["issue"], f"chatter {i}", "alice")
+        tasks.retry(self.store, task["id"], worker=config.load(self.a)["worker"], by="alice")
+        with patch("agent_relay.github.MAX_PAGES", 1):
+            self.talk(self.a).flush(self.store.read()[1]["tasks"][task["id"]])
+        self.assertEqual(self.db()["pulls"][str(old)]["state"], "closed")
 
     def test_late_attach_from_the_old_attempt_never_closes_a_restored_pr(self):
         task = self.add()

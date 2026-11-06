@@ -2,7 +2,7 @@
 
 ## Automated (every CI run)
 
-57 tests on temporary bare Git remotes, independent clones, real child processes,
+60 tests on temporary bare Git remotes, independent clones, real child processes,
 fake agents and an offline `gh` stand-in (`agent_relay/fake_gh.py`). They never
 spend provider quota or write to GitHub.
 
@@ -90,6 +90,13 @@ Regressions for the sixth review:
 - Handing back new work keeps its own check result while retiring the old PR.
 - A retired PR is never attached again.
 - Duplicate checks refuse a thread longer than the page cap.
+
+Regressions for the seventh review:
+
+- Handing back new work never inherits the previous checkpoint's check result.
+- After a rolled-back take, epochs keep increasing; the old hold's token matches
+  nothing.
+- A thread past the page cap does not block closing a superseded PR.
 
 `relay demo` runs the headline scenario end to end.
 
