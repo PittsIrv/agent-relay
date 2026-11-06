@@ -156,7 +156,10 @@ def run_hook(repo_hint=None, stdin=None, emit=print):
     if payload.get("error") != "rate_limit":
         return None
     from .gitstore import Store, repository
-    repo = repository(payload.get("cwd") or repo_hint or ".")
+    try:
+        repo = repository(payload.get("cwd") or repo_hint or ".")
+    except RelayError:
+        return None  # Not inside a Git repository: nothing to hand off.
     log = private_dir(repo) / "hook.log"
     lines = []
     try:
@@ -169,9 +172,13 @@ def run_hook(repo_hint=None, stdin=None, emit=print):
         lines.append(f"handoff failed: {exc}")
         return None
     finally:
-        with log.open("a") as handle:
-            for line in lines:
-                handle.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {line}\n")
+        try:
+            log.parent.mkdir(parents=True, exist_ok=True)
+            with log.open("a") as handle:
+                for line in lines:
+                    handle.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {line}\n")
+        except OSError:
+            pass
         for line in lines:
             emit(line)
 

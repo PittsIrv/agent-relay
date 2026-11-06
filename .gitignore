@@ -5,3 +5,5 @@ __pycache__/
 build/
 dist/
 .DS_Store
+docs/reviews/*.package.md
+docs/reviews/*.log
