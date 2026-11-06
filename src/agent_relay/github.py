@@ -6,12 +6,15 @@ import re
 import shlex
 import shutil
 import subprocess
+import time
 from urllib.parse import urlencode
 
 from .gitstore import RelayError, output
 
 SLUG = re.compile(r"github\.com[:/]+([\w.-]+)/([\w.-]+?)(?:\.git)?/?$")
 WRITERS = ("admin", "maintain", "write")
+PERMISSION_TTL = 600
+MAX_PAGES = 20
 
 
 def gh_argv():
@@ -39,6 +42,7 @@ class GitHub:
         if not self.argv:
             raise RelayError("GitHub mirroring needs the `gh` CLI; install it and run `gh auth login`")
         self._permissions = {}
+        self.timeout = 60
 
     def api(self, method, path, body=None, **params):
         if params:
@@ -48,12 +52,23 @@ class GitHub:
         if body is not None:
             argv += ["--input", "-"]
             data = json.dumps(body).encode()
-        result = subprocess.run(argv, input=data, capture_output=True, timeout=60)
+        try:
+            result = subprocess.run(argv, input=data, capture_output=True, timeout=self.timeout)
+        except subprocess.TimeoutExpired as exc:
+            raise RelayError(f"GitHub {method} {path.split('?')[0]} timed out") from exc
         if result.returncode:
             message = result.stderr.decode(errors="replace").strip() or result.stdout.decode(errors="replace").strip()
             raise RelayError(f"GitHub {method} {path.split('?')[0]} failed: {message[:300]}")
         text = result.stdout.decode().strip()
         return json.loads(text) if text else None
+
+    def pages(self, path, **params):
+        """Follow page numbers until a short page; bounded so a huge repo cannot stall a worker."""
+        for page in range(1, MAX_PAGES + 1):
+            items = self.api("GET", path, **params, per_page=100, page=page) or []
+            yield from items
+            if len(items) < 100:
+                return
 
     def repo(self, suffix=""):
         return f"repos/{self.slug}{suffix}"
@@ -83,31 +98,40 @@ class GitHub:
         try:
             pr = self.api("POST", self.repo("/pulls"), request)
         except RelayError as exc:
-            # Some plans reject drafts on private repositories; an ordinary PR still needs review.
-            if not draft or "draft" not in str(exc).lower():
+            # GitHub Free rejects drafts on private repositories with this exact message. The
+            # fallback PR is still unmerged and the narration says it is not a draft.
+            if not draft or "draft pull requests are not supported" not in str(exc).lower():
                 raise
             pr = self.api("POST", self.repo("/pulls"), {**request, "draft": False})
-        return pr["number"], pr.get("html_url")
+        return pr["number"], pr.get("html_url"), bool(pr.get("draft"))
 
     def pull(self, number):
         return self.api("GET", self.repo(f"/pulls/{number}"))
 
     def labeled_issues(self, label="relay"):
-        issues = self.api("GET", self.repo("/issues"), labels=label, state="open", per_page=100)
+        issues = self.pages(self.repo("/issues"), labels=label, state="open")
         return [issue for issue in issues if "pull_request" not in issue]
 
     def comments_since(self, since):
-        return self.api("GET", self.repo("/issues/comments"), since=since, sort="created",
-                        direction="asc", per_page=100)
+        # Sorted by update time, the same clock as `since`, so the cursor never skips a page.
+        return list(self.pages(self.repo("/issues/comments"), since=since, sort="updated", direction="asc"))
+
+    def issue_comments(self, number):
+        return list(self.pages(self.repo(f"/issues/{number}/comments")))
 
     def can_write(self, login):
-        if login not in self._permissions:
-            try:
-                value = self.api("GET", self.repo(f"/collaborators/{login}/permission"))["permission"]
-            except RelayError:
-                value = "none"
-            self._permissions[login] = value
-        return self._permissions[login] in WRITERS
+        """Cached for ten minutes so revoked access stops working; lookup failures are not cached."""
+        cached = self._permissions.get(login)
+        if cached and time.monotonic() - cached[1] < PERMISSION_TTL:
+            return cached[0] in WRITERS
+        try:
+            value = self.api("GET", self.repo(f"/collaborators/{login}/permission"))["permission"]
+        except RelayError as exc:
+            if "404" not in str(exc):
+                raise
+            value = "none"  # Unknown or deleted account.
+        self._permissions[login] = (value, time.monotonic())
+        return value in WRITERS
 
     def url(self, kind, ref):
         return f"https://github.com/{self.slug}/{kind}/{ref}"

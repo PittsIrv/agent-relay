@@ -79,3 +79,48 @@ existing subscriptions.
   comment per meaningful event. Periodic checkpoints are not narrated.
 - Codex has no equivalent interactive limit hook that we verified; for Codex and
   other CLIs the interactive path is a manual `relay handoff`.
+
+## Independent review — 2026-11-06 (gpt-6-astra high, gemini-3.1-pro-preview)
+
+Full text: `docs/reviews/2026-11-06-v0.2.review.md`. GPT verdict: "do not ship v0.2 as
+advertised". Gemini verdict: "ship with fixes". Adjudication (reviewer finding → our call):
+
+GPT-6 Astra
+- 1.1 Retry keeps the old PR, old merge completes new work → **agree**, fixed: PRs are per attempt (`retire_pr`), `mark_done` requires the current PR. Test added.
+- 1.2 Issue-creation vs import race can make a second task → **agree**, fixed: Relay-opened issues carry an ownership marker that import skips. Test added.
+- 1.3 `TimeoutExpired` escapes the best-effort boundary → **agree**, fixed: converted to `RelayError` in `GitHub.api`. Test added.
+- 1.4 No sync while an attempt runs, so cancel can wait an hour → **agree**, fixed: the attempt loop syncs every minute. Test added.
+- 1.5 Cursor uses update time but ordering uses creation time; no pagination → **agree**, fixed: sort by `updated`, paginate. Test added.
+- 1.6 Issue import limited to one page → **agree**, fixed: paginated (bounded at 20 pages).
+- 1.7 Permission cache never expires; failures cached as denial → **agree**, fixed: 10-minute TTL, failures not cached (404 treated as no access). Test added.
+- 1.8 "Processed once" only within the last 500 ids → **agree in part**: window raised to 5,000 and the claim narrowed in docs; an unbounded set would grow shared state forever.
+- 1.9 Crash between post and cache write duplicates comments → **agree**, fixed: the thread is checked for the marker before posting. Test added.
+- 1.10 Failed `take` strands a non-expiring hold → **agree**, fixed: fetch before holding, roll back to queued on failure. Test added.
+- 1.11 Hook stops handing off once the branch's earlier task is done → **agree**, fixed: only an identical tree is skipped. Test added.
+- 2.1 Wall-clock leases → **already documented**; README now states it in the limits list.
+- 2.2 Dedupe tree is the probe, not the published snapshot → **agree**, fixed.
+- 2.3 Goal may be unrecoverable without the prompt → **agree, by design** (D5): privacy default; `--share-prompt` and `relay handoff "message"` exist. Revisit with user feedback.
+- 2.4 Dependencies on another branch → **agree**, documented: dependents should target the branch the dependency merges into.
+- 2.5 Narration lost if the originating worker never returns → **agree**, documented as a limit.
+- 3.1 Shared outbox → **disagree for now**: remote marker check removes the realistic duplicate case without another shared structure.
+- 3.2 Attempt-scoped PRs → **agree**, done (1.1).
+- 3.3 Render from event-time facts → **agree**, fixed: events snapshot checkpoint, check result and start SHA.
+- 3.4 Silent draft downgrade → **agree in part**: fallback now matches GitHub's exact message only, and the comment says the PR is not a draft. Still unmerged, so the review boundary holds.
+- 3.5 Transactional take → **agree**, done (1.10).
+- 4.1 No real two-machine GitHub trace → **agree; open.** Creating a GitHub sandbox repository was blocked in this session; this is the next validation milestone and the README says so.
+- 4.4 Which commit "passed" validates → **agree**, fixed: PR body and comment flag a check that changed files.
+- 5.1 Package omitted store and tests → documentation of the package, not the repo; the full suite is in `tests/`.
+- 5.2 OS support unstated → **agree**, README now says macOS or Linux.
+- 5.5 v0.1 tasks have no `created_by` and are not mirrored → **agree**, accepted: v0.1 tasks keep working without GitHub narration.
+
+Gemini
+- Pagination → **agree**, fixed (as GPT 1.5, 1.6).
+- Clock skew → **already documented**.
+- Draft fallback matches any "draft" text → **agree**, fixed (as GPT 3.4).
+- Hook blocks on stdin → **disagree**: Claude Code writes the payload and closes stdin; the hook only runs from that path.
+- POSIX-only undocumented → **agree**, fixed.
+- `relay/state` history growth → **agree**, documented as a limit; pruning is future work.
+- Use urllib + token instead of `gh` → **disagree** (D2): keeps auth in the owner's own `gh` login and adds no token handling; call volume is a few per minute.
+- Use issue comments with ETags as the lock → **disagree** (D1): comments have no conditional update.
+
+Verdict after fixes: re-reviewed below. Spend: cents (about 40k tokens across both reviewers).

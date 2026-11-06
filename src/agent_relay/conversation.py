@@ -14,6 +14,7 @@ from .gitstore import RelayError, output, private_dir
 from .github import GitHub
 
 MARKER = "<!-- relay:{task}:{n} -->"
+OWNED = "<!-- relay-task:{task} -->"
 SILENT = {"checkpoint", "created"}
 VERBS = ("note", "retry", "cancel")
 
@@ -63,8 +64,8 @@ class Conversation:
     def commit_link(self, sha):
         return f"[`{short(sha)}`]({self.gh.url('commit', sha)})" if self.gh else f"`{short(sha)}`"
 
-    def saved(self, task):
-        cp = task.get("checkpoint")
+    def saved(self, task, ev=None):
+        cp = (ev or {}).get("checkpoint") or (None if ev else task.get("checkpoint"))
         if not cp:
             return "No checkpoint was published, so the next agent starts from the task base."
         summary = cp.get("summary") or {}
@@ -82,25 +83,29 @@ class Conversation:
         if kind == "imported":
             return f"📥 {who} queued this issue as task `{task['id']}`. {self.audience(task)}"
         if kind == "claimed":
-            start = task.get("checkpoint")
-            origin = f"the latest checkpoint {self.commit_link(start['sha'])}" if start else f"`{task.get('base_branch') or 'base'}` at {self.commit_link(task['base'])}"
+            start = ev.get("start")
+            origin = f"the latest checkpoint {self.commit_link(start)}" if start else f"`{task.get('base_branch') or 'base'}` at {self.commit_link(task['base'])}"
             note = " The previous lease had expired." if ev.get("recovered") else ""
             return f"🤖 {who} picked this up (attempt {ev['epoch']}), starting from {origin}.{note}"
         if kind == "held":
             return f"🧑‍💻 {who} took this task to work on interactively. Agents will leave it alone until it is handed back."
         if kind == "handoff":
-            return (f"⏸ {who} stopped: {ev.get('reason') or 'handed off'}.\n\n{self.saved(task)}\n\n"
+            return (f"⏸ {who} stopped: {ev.get('reason') or 'handed off'}.\n\n{self.saved(task, ev)}\n\n"
                     "Up for grabs: the next available agent continues from this checkpoint.")
         if kind == "queued":
-            return (f"⏸ {who} stopped: {ev.get('reason') or 'released'}.\n\n{self.saved(task)}\n\n"
+            return (f"⏸ {who} stopped: {ev.get('reason') or 'released'}.\n\n{self.saved(task, ev)}\n\n"
                     "Up for grabs: the next available agent continues from this checkpoint.")
         if kind == "review":
-            check = (task.get("verification") or {}).get("result", "not configured")
-            pr = f" Draft PR #{task['pr']} is open for review." if task.get("pr") else ""
+            check = ev.get("check") or "not configured"
+            if ev.get("changed_during_check"):
+                check += "** (the check changed files; the final snapshot was not re-checked)**"
+            pr = ""
+            if task.get("pr") and task.get("pr_epoch") == ev.get("epoch"):
+                pr = f" {'Draft PR' if task.get('pr_draft', True) else 'PR (drafts are unavailable in this repository)'} #{task['pr']} is open for review."
             return (f"✅ {who} finished attempt {ev.get('epoch', task['epoch'])}. Local check: **{check}**.{pr}\n\n"
-                    f"{self.saved(task)}\n\nNothing was merged. A person reviews and merges the PR.")
+                    f"{self.saved(task, ev)}\n\nNothing was merged. A person reviews and merges the PR.")
         if kind == "blocked":
-            return (f"⚠️ {who} stopped with an error: {ev.get('reason') or 'unknown'}.\n\n{self.saved(task)}\n\n"
+            return (f"⚠️ {who} stopped with an error: {ev.get('reason') or 'unknown'}.\n\n{self.saved(task, ev)}\n\n"
                     "A collaborator can inspect it and comment `/relay retry` with guidance.")
         if kind == "retried":
             note = f"\n\n> {ev['note']}" if ev.get("note") else ""
@@ -125,12 +130,16 @@ class Conversation:
         asked = f"{self.audience(task)}\n\n" if task.get("for") else ""
         return (f"{task['prompt']}\n\n{asked}---\n_Agent Relay task `{task['id']}` from `{base}` at `{short(task['base'])}`. "
                 "Opted-in agents claim it, checkpoint to `relay/checkpoints/*`, and hand off on usage limits. "
-                "Collaborators can steer with `/relay note <text>`, `/relay retry [guidance]` or `/relay cancel`._")
+                "Collaborators can steer with `/relay note <text>`, `/relay retry [guidance]` or `/relay cancel`._\n"
+                + OWNED.format(task=task["id"]))
 
     def pr_body(self, task, state):
         attempts = [ev for ev in task["events"] if ev["kind"] in ("claimed", "held")]
         rows = "\n".join(f"| {ev['epoch']} | {self.who(ev, state)} |" for ev in attempts)
-        check = (task.get("verification") or {}).get("result", "not configured")
+        verification = task.get("verification") or {}
+        check = verification.get("result", "not configured")
+        if verification.get("snapshot_changed_during_check"):
+            check += "** on `" + short(verification.get("input_sha")) + "`; the check then changed files, so this head was not re-checked**"
         closes = f"Closes #{task['issue']}\n\n" if task.get("issue") else ""
         return (f"{closes}Produced by coding agents through Agent Relay (task `{task['id']}`).\n\n"
                 f"| Attempt | Worker |\n|---|---|\n{rows}\n\nLocal check on the finishing machine: **{check}**. "
@@ -145,7 +154,7 @@ class Conversation:
         try:
             state = state or self.store.read()[1]
             return self._flush(task, state)
-        except (RelayError, OSError, ValueError, KeyError) as exc:
+        except (RelayError, OSError, ValueError, KeyError, TypeError) as exc:
             self.emit(f"GitHub update deferred: {exc}")
             return task
 
@@ -163,27 +172,30 @@ class Conversation:
                 last = next((ev for ev in reversed(task["events"]) if ev["kind"] == "review"), None)
                 if last and last.get("worker") == self.worker:
                     task = self._open_pr(task, state)
-            for ev in task["events"]:
-                key = f"{task['id']}:{ev.get('n')}"
-                if ev.get("worker") != self.worker or not ev.get("n") or ev["kind"] in SILENT or key in posted:
-                    continue
-                body = self.render(task, ev, state)
-                if body:
-                    self.gh.comment(task["issue"], body + "\n" + MARKER.format(task=task["id"], n=ev["n"]))
-                posted.add(key)
-                self._save("posted.json", sorted(posted))
+            pending = [ev for ev in task["events"] if ev.get("worker") == self.worker and ev.get("n")
+                       and ev["kind"] not in SILENT and f"{task['id']}:{ev['n']}" not in posted]
+            if pending:
+                # A crash between posting and recording must not post twice: check the thread itself.
+                remote = "\n".join(c.get("body") or "" for c in self.gh.issue_comments(task["issue"]))
+                for ev in pending:
+                    marker = MARKER.format(task=task["id"], n=ev["n"])
+                    body = self.render(task, ev, state)
+                    if body and marker not in remote:
+                        self.gh.comment(task["issue"], body + "\n" + marker)
+                    posted.add(f"{task['id']}:{ev['n']}")
+                    self._save("posted.json", sorted(posted))
             return task
 
     def _open_pr(self, task, state):
         cp = task["checkpoint"]
         try:
-            number, url = self.gh.open_pr(cp["branch"], task.get("base_branch") or "main",
-                                          f"relay: {title(task)}", self.pr_body(task, state))
+            number, url, draft = self.gh.open_pr(cp["branch"], task.get("base_branch") or "main",
+                                                 f"relay: {title(task)}", self.pr_body(task, state))
         except RelayError as exc:
             self.emit(f"Could not open a PR for {task['id']}: {exc}")
             return task
-        self.emit(f"Opened draft PR #{number} {url or ''}".rstrip())
-        return tasks.annotate(self.store, task["id"], pr=number)
+        self.emit(f"Opened {'draft ' if draft else ''}PR #{number} {url or ''}".rstrip())
+        return tasks.annotate(self.store, task["id"], pr=number, pr_epoch=task["epoch"], pr_draft=draft)
 
     def flush_all(self, state):
         for task in state["tasks"].values():
@@ -202,7 +214,10 @@ class Conversation:
         linked = {t.get("issue") for t in state["tasks"].values()}
         by = self.cfg.get("label")
         for issue in self.gh.labeled_issues():
-            if issue["number"] in linked or not self.gh.can_write(issue["user"]["login"]):
+            # Issues Relay opened for its own tasks carry an ownership marker; never import those.
+            if issue["number"] in linked or "<!-- relay-task:" in (issue.get("body") or ""):
+                continue
+            if not self.gh.can_write(issue["user"]["login"]):
                 continue
             refs = output(self.repo, "ls-remote", "--refs", self.cfg["remote"], f"refs/heads/{default_branch}")
             if not refs:

@@ -116,7 +116,7 @@ class Worker:
     def sync(self):
         try:
             report = self.talk.sync(self.cfg.get("default_branch") or "main")
-        except (RelayError, OSError, ValueError, KeyError) as exc:
+        except (RelayError, OSError, ValueError, KeyError, TypeError) as exc:
             self.emit(f"GitHub sync deferred: {exc}")
             return
         for number in report.get("imported", []):
@@ -174,7 +174,7 @@ class Worker:
             with log_path.open("wb") as log, prompt_path.open("rb") as prompt_file:
                 proc = subprocess.Popen(self.argv, cwd=worktree, stdin=prompt_file,
                                         stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-                started = last_renew = last_checkpoint = time.monotonic()
+                started = last_renew = last_checkpoint = last_sync = time.monotonic()
                 interrupted = False
                 while proc.poll() is None:
                     now = time.monotonic()
@@ -191,6 +191,10 @@ class Worker:
                     if now - last_checkpoint >= self.interval:
                         checkpoint()
                         last_checkpoint = time.monotonic()
+                    if self.talk.gh and now - last_sync >= self.sync_every:
+                        # Keep applying /relay commands (cancel included) while this attempt runs.
+                        self.sync()
+                        last_sync = time.monotonic()
                     time.sleep(self.poll)
                 returncode = proc.wait()
                 stop_group(proc)

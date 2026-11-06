@@ -8,6 +8,7 @@ from .gitstore import RelayError
 
 HELD_FOREVER = 10 * 365 * 86400
 REQUEUEABLE = ("blocked", "review", "cancelled")
+HANDLED_KEEP = 5000
 
 
 class LeaseLost(RelayError):
@@ -65,6 +66,21 @@ def import_issue(store, number, prompt, base, base_branch, worker, by, requested
     return store.change(mutate)
 
 
+def retire_pr(task):
+    """A new attempt gets its own PR; the old one can no longer complete the task."""
+    if task.get("pr"):
+        task.setdefault("past_prs", []).append({"pr": task["pr"], "epoch": task.get("pr_epoch")})
+    task["pr"] = None
+    for key in ("verification", "pr_epoch", "pr_draft"):
+        task.pop(key, None)
+
+
+def facts(task):
+    """Event-time snapshot so delayed narration describes this moment, not a later one."""
+    cp = task.get("checkpoint")
+    return {"checkpoint": {k: cp[k] for k in ("sha", "branch", "summary") if k in cp}} if cp else {}
+
+
 def ready(task, state):
     deps = (state["tasks"].get(dep) for dep in task.get("after", []))
     return all(dep is not None and dep["status"] == "done" for dep in deps)
@@ -95,7 +111,8 @@ def claim(store, worker, ttl=300, now=None, by=None, task_id=None, policy=None):
             task["epoch"] += 1
             task["status"] = "running"
             task["lease"] = {"worker": worker, "epoch": task["epoch"], "until": current + ttl}
-            event(task, "claimed", worker=worker, by=by, epoch=task["epoch"], recovered=expired)
+            event(task, "claimed", worker=worker, by=by, epoch=task["epoch"], recovered=expired,
+                  start=(task.get("checkpoint") or {}).get("sha"))
             return copy.deepcopy(task)
         return None
     return store.change(mutate)
@@ -111,6 +128,7 @@ def hold(store, task_id, worker, by=None, now=None):
         expired = task["status"] == "running" and task["lease"]["until"] < current
         if task["status"] not in ("queued", *REQUEUEABLE) and not expired:
             raise RelayError(f"Task is {task['status']}; only queued, review, blocked or cancelled tasks can be taken")
+        retire_pr(task)
         task["epoch"] += 1
         task["status"] = "held"
         task["lease"] = {"worker": worker, "epoch": task["epoch"], "until": current + HELD_FOREVER, "human": True}
@@ -154,7 +172,10 @@ def update(store, task_id, worker, epoch, *, ttl=300, checkpoint=None, status=No
         if status:
             task["status"] = status
             task["lease"] = None
-            event(task, kind or status, reason=reason or "", worker=worker, by=by, epoch=epoch, **extra)
+            check = (task.get("verification") or {}) if status == "review" else {}
+            event(task, kind or status, reason=reason or "", worker=worker, by=by, epoch=epoch,
+                  check=check.get("result"), changed_during_check=check.get("snapshot_changed_during_check"),
+                  **facts(task), **extra)
         return copy.deepcopy(task)
     return store.change(mutate)
 
@@ -187,6 +208,7 @@ def retry(store, task_id, note=None, worker=None, by=None):
         if task["status"] not in REQUEUEABLE:
             raise RelayError("Only blocked, review or cancelled tasks can be retried")
         task["status"] = "queued"
+        retire_pr(task)
         _note(task, note, by)
         event(task, "retried", worker=worker, by=by, note=note or "")
         return task_id
@@ -221,7 +243,7 @@ def cancel(store, task_id, worker=None, by=None):
 def mark_done(store, task_id, pr, worker=None):
     def mutate(state):
         task = state["tasks"].get(task_id)
-        if not task or task["status"] != "review":
+        if not task or task["status"] != "review" or task.get("pr") != pr:
             return None
         task["status"] = "done"
         event(task, "done", worker=worker, pr=pr)
@@ -236,7 +258,7 @@ def command(store, comment_id, task_id, verb, text, worker, by):
         if comment_id in handled:
             return None
         handled.append(comment_id)
-        state["handled"] = handled[-500:]
+        state["handled"] = handled[-HANDLED_KEEP:]
         task = state["tasks"].get(task_id)
         if not task:
             return "ignored"
@@ -246,6 +268,7 @@ def command(store, comment_id, task_id, verb, text, worker, by):
             return "noted"
         if verb == "retry" and task["status"] in REQUEUEABLE:
             task["status"] = "queued"
+            retire_pr(task)
             _note(task, text, by)
             event(task, "retried", worker=worker, by=by, note=text, via="github")
             return "requeued"

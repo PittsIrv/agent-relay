@@ -51,22 +51,32 @@ can leave children running. Host death stops its processes but loses unsynced wo
 
 ## The GitHub conversation
 
-- **Issues.** The task's creator opens one issue per task. Issues labelled `relay`
-  and opened by a writer (admin, maintain, write) are imported as tasks; import is
-  idempotent under CAS. Assignees become the task's addressees.
+- **Issues.** The task's creator opens one issue per task, carrying a hidden
+  ownership marker so no worker imports it as a second task. Issues labelled
+  `relay` and opened by a writer (admin, maintain, write) are imported as tasks;
+  import is idempotent under CAS and paginated. Assignees become the addressees.
 - **Comments.** Each meaningful event (claim, handoff, review, block, retry,
-  cancel, done, CLI note) is posted once, by the worker that caused it, with a
-  hidden `<!-- relay:task:n -->` marker and a local "posted" cache. Periodic
-  checkpoints are not narrated. If GitHub is down the comment is posted on a later
-  flush; checkpoints and leases never wait for it.
+  cancel, done, CLI note) is posted by the worker that caused it, with a hidden
+  `<!-- relay:task:n -->` marker. Before posting, the worker checks the thread for
+  the marker, so a lost local cache does not duplicate; two concurrent posts of the
+  same event remain possible only if one worker runs twice at once. Each event
+  records the checkpoint and check result of its own moment, so late comments are
+  accurate. If GitHub is down the comment is posted on a later flush; checkpoints
+  and leases never wait for it. Events older than the last 50 per task are dropped
+  from state and are no longer narrated.
 - **Commands.** `/relay note TEXT`, `/relay retry [TEXT]`, `/relay cancel` on the
-  issue or PR, from writers only. Each comment id is applied at most once (ids are
-  recorded in shared state); the applying worker reacts 👍. Notes reach the next
+  issue or PR, from writers only (permission cached for ten minutes). Each comment
+  id is applied at most once while it is among the last 5,000 handled ids in shared
+  state; the applying worker reacts 👍. Workers sync every minute, also while an
+  agent is running, so a cancel lands within about a minute plus a heartbeat. Notes reach the next
   agent's prompt. Issue bodies other than the task text and ordinary comments do
   not, because repository text is untrusted input.
 - **PRs.** The worker that finishes opens a draft PR from its checkpoint branch
-  with `Closes #N` (a normal PR where the plan does not allow drafts). Sync marks
-  the task `done` when the PR is merged.
+  with `Closes #N`. Where GitHub rejects drafts ("Draft pull requests are not
+  supported"), it opens a normal unmerged PR and says so in the comment. PRs belong
+  to an attempt: retrying or taking a task retires its PR, and only the current
+  attempt's PR can mark the task `done` when merged. A `--after` dependency counts
+  as done when its PR merges, wherever that PR's base branch is.
 - **Identity.** Comments run under each owner's own `gh` login. People are named in
   bold, never `@mentioned`.
 
@@ -87,7 +97,9 @@ The successor's goal comes from the owner's `relay handoff` message, an earlier
 is shared only after `relay hook install --share-prompt`.
 
 `relay take` puts a task in `held` for a person: workers skip it and its lease does
-not expire. `relay handoff` (or `--review`) gives it back.
+not expire. It fetches first and returns the task to the queue if the local
+checkout fails. `relay handoff` (or `--review`) gives it back; anyone can free a
+forgotten hold with `relay retry` after `relay cancel`.
 
 ## Checkpoints
 

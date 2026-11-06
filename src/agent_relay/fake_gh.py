@@ -47,6 +47,9 @@ def main(argv):
         fcntl.flock(handle, fcntl.LOCK_EX)
         db = load(handle)
         status, result = route(db, method, url.path, query, body, login)
+        if isinstance(result, list) and "per_page" in query:
+            size, page = int(query["per_page"]), int(query.get("page", 1))
+            result = result[(page - 1) * size: page * size]
         handle.seek(0)
         handle.truncate()
         json.dump(db, handle, indent=2)

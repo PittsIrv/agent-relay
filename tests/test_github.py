@@ -1,4 +1,5 @@
 import concurrent.futures
+import sys
 import io
 import json
 import tempfile
@@ -153,6 +154,95 @@ class GitHubConversationTests(unittest.TestCase):
         presence = self.store.read()[1]["workers"][config.load(self.b)["worker"]]
         self.assertEqual(presence["accepts"], "alice; up to 1 tasks/day")
 
+    def test_retry_after_review_gets_a_new_pr_and_old_merge_does_not_finish_it(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        first_pr = self.store.read()[1]["tasks"][task["id"]]["pr"]
+        tasks.retry(self.store, task["id"], note="also handle negatives")
+        self.edit_db(lambda db: db["pulls"][str(first_pr)].update(merged=True))
+        self.assertEqual(self.talk(self.a).sync("main")["done"], [], "an old attempt's PR cannot complete the task")
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        task = self.store.read()[1]["tasks"][task["id"]]
+        self.assertNotEqual(task["pr"], first_pr)
+        self.assertEqual(task["past_prs"][0]["pr"], first_pr)
+        self.assertEqual(self.db()["pulls"][str(task["pr"])]["head"], task["checkpoint"]["branch"])
+        self.edit_db(lambda db: db["pulls"][str(task["pr"])].update(merged=True))
+        self.assertEqual(self.talk(self.a).sync("main")["done"], [task["id"]])
+
+    def test_relay_owned_issue_is_never_imported_as_a_second_task(self):
+        task = self.add()
+        def unlink(db):  # Simulate the window between creating the issue and recording its number.
+            db["issues"]["1"]["user"]["login"] = "alice"
+        self.edit_db(unlink)
+        state_tasks = self.store.read()[1]["tasks"]
+        def drop_link(state):
+            state["tasks"][task["id"]]["issue"] = None
+            return True
+        self.store.change(drop_link)
+        self.assertEqual(self.talk(self.b).sync("main")["imported"], [])
+        self.assertEqual(len(self.store.read()[1]["tasks"]), len(state_tasks))
+
+    def test_cancel_reaches_a_running_agent_without_any_other_worker(self):
+        task = self.add()
+        worker = mock(self.a, "wait", emit=quiet, sync=0.2, heartbeat=0.2)
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            future = pool.submit(worker.run, True)
+            deadline = time.monotonic() + 10
+            while self.store.read()[1]["tasks"][task["id"]]["status"] != "running":
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.05)
+            self.comment(1, "/relay cancel", "bob")
+            future.result(timeout=20)
+        self.assertEqual(self.store.read()[1]["tasks"][task["id"]]["status"], "cancelled")
+
+    def test_commands_beyond_the_first_page_are_applied(self):
+        task = self.add()
+        mock(self.a, "error", emit=quiet).run(once=True)
+        def chatter(db):
+            for i in range(130):
+                db["comments"].append({"id": 1000 + i, "body": f"thinking out loud {i}", "user": {"login": "bob"},
+                                       "created_at": "2999-01-01T00:00:00Z", "updated_at": "2999-01-01T00:00:00Z",
+                                       "issue_url": "https://api.github.com/repos/demo/shared/issues/1"})
+        self.edit_db(chatter)
+        self.comment(1, "/relay retry fix the import", "bob")
+        self.talk(self.a).sync("main")
+        self.assertEqual(self.store.read()[1]["tasks"][task["id"]]["status"], "queued")
+
+    def test_revoked_write_access_stops_working(self):
+        from agent_relay import github
+        task = self.add()
+        mock(self.a, "error", emit=quiet).run(once=True)
+        talk = self.talk(self.a)
+        self.assertTrue(talk.gh.can_write("bob"))
+        self.edit_db(lambda db: db["permissions"].update(bob="read"))
+        original = github.PERMISSION_TTL
+        github.PERMISSION_TTL = 0
+        try:
+            self.comment(1, "/relay retry", "bob")
+            talk.sync("main")
+        finally:
+            github.PERMISSION_TTL = original
+        self.assertEqual(self.store.read()[1]["tasks"][task["id"]]["status"], "blocked")
+
+    def test_lost_local_cache_does_not_duplicate_comments(self):
+        self.add()
+        mock(self.a, "limit", emit=quiet).run(once=True)
+        before = len(self.db()["comments"])
+        (private_dir(self.a) / "posted.json").unlink()
+        self.talk(self.a).flush_all(self.store.read()[1])
+        self.assertEqual(len(self.db()["comments"]), before)
+
+    def test_github_timeout_is_contained(self):
+        config.update(self.a, gh=[sys.executable, "-c", "import time; time.sleep(5)"])
+        talk = self.talk(self.a)
+        talk.gh.timeout = 0.2
+        with self.assertRaisesRegex(Exception, "timed out"):
+            talk.gh.login()
+        task_id = tasks.add(self.store, "Slow GitHub", self.base, base_branch="main",
+                            created_by=config.load(self.a)["worker"])
+        task = talk.flush(self.store.read()[1]["tasks"][task_id])
+        self.assertIsNone(task["issue"])
+
     def test_github_outage_never_blocks_a_handoff(self):
         cfg = config.load(self.a)
         config.update(self.a, gh=["false"])
@@ -233,6 +323,30 @@ class InteractiveHandoffTests(unittest.TestCase):
         self.assertIn("return 41", output(self.b, "show", f"{back['checkpoint']['sha']}:answer.py"))
         self.assertEqual(back["notes"][-1]["text"], "off by one left")
         self.assertEqual(config.load(self.b)["held"], {})
+
+    def test_failed_take_returns_the_task_to_the_queue(self):
+        from unittest.mock import patch
+        (self.a / "answer.py").write_text("def answer():\n    return None\n")
+        task = self.hook()
+        real = interactive.git
+        def flaky(repo, *args, **kwargs):
+            if args and args[0] == "switch":
+                raise interactive.RelayError("simulated checkout failure")
+            return real(repo, *args, **kwargs)
+        with patch("agent_relay.interactive.git", side_effect=flaky):
+            with self.assertRaisesRegex(Exception, "checkout failure"):
+                interactive.take(self.b, config.load(self.b), Store(self.b), task["id"], emit=quiet)
+        self.assertEqual(self.tasks()[task["id"]]["status"], "queued")
+
+    def test_hook_publishes_new_work_after_the_previous_task_moved_on(self):
+        (self.a / "answer.py").write_text("def answer():\n    return None\n")
+        first = self.hook()
+        mock(self.b, "finish", emit=quiet).run(once=True)
+        self.assertEqual(self.hook()["id"], first["id"], "same tree: nothing new")
+        (self.a / "other.py").write_text("x = 1\n")
+        second = self.hook()
+        self.assertNotEqual(second["id"], first["id"])
+        self.assertEqual(len(self.tasks()), 2)
 
     def test_take_refuses_dirty_checkout(self):
         (self.a / "answer.py").write_text("def answer():\n    return None\n")

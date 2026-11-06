@@ -2,7 +2,7 @@
 
 ## Automated (every CI run)
 
-29 tests on temporary bare Git remotes, independent clones, real child processes,
+38 tests on temporary bare Git remotes, independent clones, real child processes,
 fake agents and an offline `gh` stand-in (`agent_relay/fake_gh.py`). They never
 spend provider quota or write to GitHub.
 
@@ -39,6 +39,20 @@ GitHub conversation:
 - A GitHub outage does not block a handoff; deferred comments post later.
 - Assigned issues go only to the assignee's agent; `--accept-from` and the daily
   cap hold.
+
+Regressions for the 2026-11-06 independent review:
+
+- A retried task opens a new PR for its new attempt; merging the old attempt's PR
+  does not complete it.
+- An issue Relay opened for its own task is never imported as a second task, even
+  before its number is recorded.
+- `/relay cancel` reaches a running agent through its own worker's sync.
+- Commands after 130 ordinary comments (beyond the first API page) are applied.
+- Revoked write access stops being honoured once the permission cache expires.
+- Losing the local "posted" cache does not duplicate comments.
+- A hanging `gh` call times out without blocking task creation.
+- A failed `relay take` returns the task to the queue instead of stranding it.
+- The usage-limit hook publishes new work after the previous task was completed.
 
 `relay demo` runs the headline scenario end to end.
 

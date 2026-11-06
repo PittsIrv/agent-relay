@@ -81,14 +81,15 @@ def handoff(repo, cfg, store, *, message=None, review=False, reason=None, agent=
     if task is None and branch and hook:
         previous = (cfg.get("handed_off") or {}).get(branch)
         known = previous and state["tasks"].get(previous["task"])
-        if known and known["status"] == "queued":
-            if tree == previous.get("tree"):
-                emit(f"Already handed off as {known['id']}; nothing new to publish.")
-                return known
-            task = tasks.claim(store, cfg["worker"], by=who, task_id=known["id"])
-        elif known:
-            emit(f"{known['id']} is already {known['status']}; not publishing a second copy.")
+        if known and tree == previous.get("tree"):
+            emit(f"Already handed off as {known['id']} ({known['status']}); nothing new to publish.")
             return known
+        if known and known["status"] == "queued":
+            task = tasks.claim(store, cfg["worker"], by=who, task_id=known["id"])
+            if task is None:
+                emit(f"{known['id']} was just claimed by someone else; not publishing a second copy.")
+                return known
+        # Otherwise the earlier task moved on (running, review, done) and this is new work.
 
     git(repo, "fetch", "--quiet", "--no-tags", remote)
     if task:
@@ -110,6 +111,7 @@ def handoff(repo, cfg, store, *, message=None, review=False, reason=None, agent=
 
     epoch = task["epoch"]
     sha = snapshot(repo, head, task["id"], epoch, label="interactive handoff")
+    tree = output(repo, "rev-parse", f"{sha}^{{tree}}")  # What was actually published.
     cp = publish(repo, remote, sha, task["id"], epoch)
     cp["summary"] = summarize(repo, base, sha)
     status = "review" if review else "queued"
@@ -135,11 +137,21 @@ def take(repo, cfg, store, task_id, emit=print):
     if git(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}", check=False).returncode == 0:
         raise RelayError(f"Local branch {branch} already exists; rename or delete it first")
     who = label(cfg)
+    current = store.read()[1]["tasks"].get(task_id)
+    if not current:
+        raise RelayError("Unknown task")
+    # Fetch before holding so a network failure cannot leave a hold nobody can find.
+    git(repo, "fetch", "--quiet", "--no-tags", cfg["remote"], (current.get("checkpoint") or {}).get("sha") or current["base"])
     task = tasks.hold(store, task_id, cfg["worker"], by=who)
     start = (task.get("checkpoint") or {}).get("sha") or task["base"]
-    git(repo, "fetch", "--quiet", "--no-tags", cfg["remote"], start)
-    git(repo, "switch", "--quiet", "-c", branch, start)
-    config.update(repo, held={**(cfg.get("held") or {}), branch: task_id})
+    try:
+        git(repo, "fetch", "--quiet", "--no-tags", cfg["remote"], start)
+        git(repo, "switch", "--quiet", "-c", branch, start)
+        config.update(repo, held={**(cfg.get("held") or {}), branch: task_id})
+    except Exception:
+        tasks.update(store, task_id, cfg["worker"], task["epoch"], status="queued",
+                     reason="taking it locally failed; returned to the queue", by=who)
+        raise
     Conversation(repo, {**cfg, "label": who}, store, emit).flush(task)
     emit(f"Holding {task_id} on local branch {branch} at {start[:10]}. Agents will not touch it.")
     emit("Work as usual. `relay handoff` gives it back to the pool; `relay handoff --review` marks it finished.")

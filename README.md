@@ -21,8 +21,8 @@ opens a draft PR. Nobody shares an account, and nobody has to be awake to say
   Accounts, logins and transcripts never leave your machine.
 - **Nothing merges on its own.** Every attempt is an unvalidated checkpoint on its
   own branch; a person reviews the PR.
-- **Small.** Python 3.11+, Git, and the `gh` CLI. No server, no database, no
-  Python dependencies.
+- **Small.** macOS or Linux, Python 3.11+, Git and the `gh` CLI. No server, no
+  database, no Python dependencies.
 
 > **Status: alpha (v0.2).** The two-clone workflow is tested end to end, and a live
 > run used real Codex as the successor. Real provider usage-limit events and
@@ -148,6 +148,9 @@ Details and failure analysis: [architecture](docs/architecture.md) ·
   fence cooperative workers, not malicious ones.
 - If a laptop dies, work since its last pushed checkpoint (default every two
   minutes) is lost until it comes back.
+- Leases use wall-clock time; keep clocks synchronized. `relay/state` gains a
+  commit per heartbeat and checkpoint branches accumulate; there is no pruning yet.
+- Windows is not supported (workers freeze and stop agents with POSIX process groups).
 
 ## Commands
 
@@ -156,7 +159,7 @@ Details and failure analysis: [architecture](docs/architecture.md) ·
 | `relay init [--check CMD] [--no-github]` | Enroll this clone (paused) |
 | `relay start --agent codex\|claude [--model M] [--accept-from A,B] [--max-tasks-per-day N] [--once]` | Lend your agent; foreground |
 | `relay pause` / `relay resume` | Reserve or release your worker |
-| `relay add TEXT [--for LOGIN] [--after TASK] [--base BRANCH]` | Queue a task |
+| `relay add TEXT [--for LOGIN] [--after TASK] [--base BRANCH]` | Queue a task (`--after` tasks should target the branch their dependencies merge into) |
 | `relay handoff [TEXT] [--review]` | Publish your in-progress work |
 | `relay take TASK` | Hold a task and check it out locally |
 | `relay hook install [--share-prompt]` / `uninstall` | Claude Code usage-limit hook |
