@@ -133,6 +133,10 @@ checkpoint is saved and `snapshot_changed_during_check` is true.
   comment cursor, hook outcomes.
 - `.git/agent-relay/attempts/`: retained worktrees, private logs, prompts, recovery SHAs.
 
+Known bounds: comment sync, issue import and marker search read at most 2,000
+items per call; a task stuck in `held` because its holder crashed is freed with
+`relay cancel` then `relay retry`.
+
 No automatic pruning yet. Repository administrators must allow direct writes to
 `relay/*` branches while keeping normal protection on the main branch.
 

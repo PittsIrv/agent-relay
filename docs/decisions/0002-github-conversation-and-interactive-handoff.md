@@ -124,3 +124,25 @@ Gemini
 - Use issue comments with ETags as the lock → **disagree** (D1): comments have no conditional update.
 
 Verdict after fixes: re-reviewed below. Spend: cents (about 40k tokens across both reviewers).
+
+## Independent re-review of the fixes — 2026-11-06 (gpt-6-astra high)
+
+Full text: `docs/reviews/2026-11-06-v0.2-fixes.review.md`. Verdict: "do not ship this
+revision yet", naming two blockers. Adjudication:
+
+- 1.1 A stale in-flight PR creation can attach to a newer attempt → **agree**, fixed: `attach_pr` links a PR only if the task is still in review at the PR's epoch; a refused PR is closed as superseded; `mark_done` also requires the PR's epoch to be the current one. Interleaving test added.
+- 1.2 In-attempt sync can starve lease renewal → **agree**, fixed: all GitHub work during an attempt (sync and the post-claim comment) runs on one background thread; heartbeats never wait on GitHub. Test with a 4-second `gh` call and a 3-second lease.
+- 1.3 Boundary-timestamp truncation after 2,000 comments → **agree, accepted limit**: needs more than 2,000 comments edited within one minute; documented.
+- 1.4 Import beyond 2,000 open labelled issues → **agree, accepted limit**, documented.
+- 1.5 Marker search on threads beyond 2,000 comments → **agree, accepted limit**, documented.
+- 1.6 Orphaned issue or PR after a crash → **agree**, fixed: issues are adopted by ownership marker, PRs by head branch, before creating new ones. Test added.
+- 1.7 Failed take requeues instead of restoring → **agree**, fixed: `unhold` restores the prior status, PR link and verification. Test covers a blocked task.
+- 1.8 Crash between hold and local config strands the hold → **agree, documented** recovery: `relay cancel` then `relay retry`.
+- 1.9 Claim from base not snapshotted → **agree**, fixed: claim events record the base SHA.
+- 1.10 Checkpoints can evict unposted narration → **agree**, fixed: narrated events and checkpoints are kept in separate windows (50 and 10).
+- 1.11 `detect` timeout → **agree**, fixed.
+- 3.1 Superseded PRs still carry `Closes #N` → **agree**, fixed: retiring a PR closes it on GitHub with a note. Test added.
+- 3.3 Non-draft fallback should be opt-in → **disagree**: the fallback PR is still unmerged and named as non-draft in the issue; making it opt-in would leave GitHub Free private repositories without a PR by default.
+- 3.4 Bounded replay → **agree**, docstrings now state the 5,000-id window.
+- 4.1 Two-machine GitHub trace → **open**, as before.
+- 5.4 Docstrings overstate delivery → **agree**, fixed.

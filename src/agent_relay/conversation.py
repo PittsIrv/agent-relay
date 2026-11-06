@@ -1,7 +1,9 @@
 """Narrate task events on GitHub issues and PRs, and read collaborator commands back.
 
-Each event is posted once, by the worker that caused it. Shared state on the
-relay/state branch stays authoritative; a GitHub outage only delays comments.
+Each event is posted by the worker that caused it, after checking the thread for its
+marker. Shared state on the relay/state branch stays authoritative; a GitHub outage
+delays comments, and only an event that ages out of state before its worker
+returns is never narrated.
 """
 
 import fcntl
@@ -84,11 +86,13 @@ class Conversation:
             return f"📥 {who} queued this issue as task `{task['id']}`. {self.audience(task)}"
         if kind == "claimed":
             start = ev.get("start")
-            origin = f"the latest checkpoint {self.commit_link(start)}" if start else f"`{task.get('base_branch') or 'base'}` at {self.commit_link(task['base'])}"
+            origin = f"the latest checkpoint {self.commit_link(start)}" if start else f"`{task.get('base_branch') or 'base'}` at {self.commit_link(ev.get('base') or task['base'])}"
             note = " The previous lease had expired." if ev.get("recovered") else ""
             return f"🤖 {who} picked this up (attempt {ev['epoch']}), starting from {origin}.{note}"
         if kind == "held":
             return f"🧑‍💻 {who} took this task to work on interactively. Agents will leave it alone until it is handed back."
+        if kind == "released":
+            return f"↩️ {who} could not check this task out locally, so it is back to **{ev.get('restored')}**."
         if kind == "handoff":
             return (f"⏸ {who} stopped: {ev.get('reason') or 'handed off'}.\n\n{self.saved(task, ev)}\n\n"
                     "Up for grabs: the next available agent continues from this checkpoint.")
@@ -165,12 +169,15 @@ class Conversation:
             if task.get("issue") is None:
                 if task.get("created_by") != self.worker:
                     return task
-                number = self.gh.create_issue(title(task), self.issue_body(task))
+                owned = OWNED.format(task=task["id"])
+                # Adopt an issue that was created before a crash or timeout instead of opening another.
+                existing = next((i["number"] for i in self.gh.labeled_issues() if owned in (i.get("body") or "")), None)
+                number = existing or self.gh.create_issue(title(task), self.issue_body(task))
                 task = tasks.annotate(self.store, task["id"], issue=number)
-                self.emit(f"Opened issue #{task['issue']} for {task['id']}")
+                self.emit(f"{'Adopted' if existing else 'Opened'} issue #{task['issue']} for {task['id']}")
             if task["status"] == "review" and task.get("pr") is None and task.get("checkpoint"):
                 last = next((ev for ev in reversed(task["events"]) if ev["kind"] == "review"), None)
-                if last and last.get("worker") == self.worker:
+                if last and last.get("worker") == self.worker and last.get("epoch") == task["epoch"]:
                     task = self._open_pr(task, state)
             pending = [ev for ev in task["events"] if ev.get("worker") == self.worker and ev.get("n")
                        and ev["kind"] not in SILENT and f"{task['id']}:{ev['n']}" not in posted]
@@ -179,6 +186,8 @@ class Conversation:
                 remote = "\n".join(c.get("body") or "" for c in self.gh.issue_comments(task["issue"]))
                 for ev in pending:
                     marker = MARKER.format(task=task["id"], n=ev["n"])
+                    if ev.get("retired_pr"):
+                        self._retire(ev["retired_pr"], task)
                     body = self.render(task, ev, state)
                     if body and marker not in remote:
                         self.gh.comment(task["issue"], body + "\n" + marker)
@@ -187,15 +196,31 @@ class Conversation:
             return task
 
     def _open_pr(self, task, state):
-        cp = task["checkpoint"]
+        cp, epoch = task["checkpoint"], task["epoch"]
         try:
-            number, url, draft = self.gh.open_pr(cp["branch"], task.get("base_branch") or "main",
-                                                 f"relay: {title(task)}", self.pr_body(task, state))
+            existing = self.gh.find_pr(cp["branch"])  # Created before a crash: adopt, never duplicate.
+            if existing:
+                number, url, draft = existing["number"], existing.get("html_url"), bool(existing.get("draft"))
+            else:
+                number, url, draft = self.gh.open_pr(cp["branch"], task.get("base_branch") or "main",
+                                                     f"relay: {title(task)}", self.pr_body(task, state))
         except RelayError as exc:
             self.emit(f"Could not open a PR for {task['id']}: {exc}")
             return task
+        if not tasks.attach_pr(self.store, task["id"], epoch, number, draft):
+            # The task moved to a newer attempt while this PR was being created.
+            self._retire(number, task)
+            return self.store.read()[1]["tasks"][task["id"]]
         self.emit(f"Opened {'draft ' if draft else ''}PR #{number} {url or ''}".rstrip())
-        return tasks.annotate(self.store, task["id"], pr=number, pr_epoch=task["epoch"], pr_draft=draft)
+        return self.store.read()[1]["tasks"][task["id"]]
+
+    def _retire(self, number, task):
+        """Close a superseded attempt's PR so its `Closes #N` cannot close the live issue."""
+        pull = self.gh.pull(number) or {}
+        if pull.get("state") == "open" and not pull.get("merged"):
+            self.gh.comment(number, f"Superseded by a newer attempt on task `{task['id']}`; closing. "
+                                    "The branch stays available for reference.")
+            self.gh.close_pr(number)
 
     def flush_all(self, state):
         for task in state["tasks"].values():

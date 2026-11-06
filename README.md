@@ -150,6 +150,8 @@ Details and failure analysis: [architecture](docs/architecture.md) ·
   minutes) is lost until it comes back.
 - Leases use wall-clock time; keep clocks synchronized. `relay/state` gains a
   commit per heartbeat and checkpoint branches accumulate; there is no pruning yet.
+- Sized for small groups: GitHub sync reads at most 2,000 comments or labelled
+  issues per call.
 - Windows is not supported (workers freeze and stop agents with POSIX process groups).
 
 ## Commands

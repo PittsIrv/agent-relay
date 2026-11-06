@@ -108,9 +108,14 @@ def route(db, method, path, query, body, login):
                 "html_url": f"https://github.com/{slug}/pull/{number}"}
         db["pulls"][str(number)] = pull
         return 201, pull
+    if sub == "/pulls" and method == "GET":
+        head = query.get("head", "").split(":", 1)[-1]
+        return 200, [p for p in db["pulls"].values() if not head or p["head"] == head]
     found = re.fullmatch(r"/pulls/(\d+)", sub)
     if found:
         pull = db["pulls"].get(found[1])
+        if pull and method == "PATCH":
+            pull.update(body)
         return (200, pull) if pull else (404, "Not Found")
     found = re.fullmatch(r"/collaborators/([^/]+)/permission", sub)
     if found:

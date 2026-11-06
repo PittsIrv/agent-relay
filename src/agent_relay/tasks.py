@@ -16,9 +16,13 @@ class LeaseLost(RelayError):
 
 
 def event(task, kind, **fields):
+    """Keep the last 50 narrated events and the last 10 checkpoints separately, so frequent
+    checkpoints during a GitHub outage cannot push unposted narration out of state."""
     task["seq"] = task.get("seq", 0) + 1
     task["events"].append({"n": task["seq"], "at": time.time(), "kind": kind, **fields})
-    task["events"] = task["events"][-50:]
+    narrated = [ev for ev in task["events"] if ev["kind"] != "checkpoint"][-50:]
+    checkpoints = [ev for ev in task["events"] if ev["kind"] == "checkpoint"][-10:]
+    task["events"] = sorted(narrated + checkpoints, key=lambda ev: ev.get("n", 0))
 
 
 def new_task(prompt, base, *, base_branch=None, created_by=None, after=(), issue=None,
@@ -67,12 +71,15 @@ def import_issue(store, number, prompt, base, base_branch, worker, by, requested
 
 
 def retire_pr(task):
-    """A new attempt gets its own PR; the old one can no longer complete the task."""
-    if task.get("pr"):
-        task.setdefault("past_prs", []).append({"pr": task["pr"], "epoch": task.get("pr_epoch")})
+    """A new attempt gets its own PR; the old one can no longer complete the task.
+    Returns the retired PR number so the acting worker can close it on GitHub."""
+    old = task.get("pr")
+    if old:
+        task.setdefault("past_prs", []).append({"pr": old, "epoch": task.get("pr_epoch")})
     task["pr"] = None
     for key in ("verification", "pr_epoch", "pr_draft"):
         task.pop(key, None)
+    return old
 
 
 def facts(task):
@@ -112,7 +119,7 @@ def claim(store, worker, ttl=300, now=None, by=None, task_id=None, policy=None):
             task["status"] = "running"
             task["lease"] = {"worker": worker, "epoch": task["epoch"], "until": current + ttl}
             event(task, "claimed", worker=worker, by=by, epoch=task["epoch"], recovered=expired,
-                  start=(task.get("checkpoint") or {}).get("sha"))
+                  start=(task.get("checkpoint") or {}).get("sha"), base=task["base"])
             return copy.deepcopy(task)
         return None
     return store.change(mutate)
@@ -128,13 +135,46 @@ def hold(store, task_id, worker, by=None, now=None):
         expired = task["status"] == "running" and task["lease"]["until"] < current
         if task["status"] not in ("queued", *REQUEUEABLE) and not expired:
             raise RelayError(f"Task is {task['status']}; only queued, review, blocked or cancelled tasks can be taken")
-        retire_pr(task)
+        # Remember what to restore if taking it locally fails before anything changes.
+        task["held_from"] = {k: copy.deepcopy(task.get(k)) for k in
+                             ("status", "pr", "pr_epoch", "pr_draft", "verification", "past_prs")}
+        old = retire_pr(task)
         task["epoch"] += 1
         task["status"] = "held"
         task["lease"] = {"worker": worker, "epoch": task["epoch"], "until": current + HELD_FOREVER, "human": True}
-        event(task, "held", worker=worker, by=by, epoch=task["epoch"])
+        event(task, "held", worker=worker, by=by, epoch=task["epoch"], retired_pr=old)
         return copy.deepcopy(task)
     return store.change(mutate)
+
+
+def unhold(store, task_id, worker, epoch, by=None):
+    """Undo a hold whose local checkout failed: restore the prior status and PR link."""
+    def mutate(state):
+        task = state["tasks"].get(task_id)
+        lease = task and task.get("lease")
+        if not lease or lease["worker"] != worker or lease["epoch"] != epoch or task["status"] != "held":
+            raise LeaseLost("Task is no longer held by this clone")
+        previous = task.pop("held_from", None) or {"status": "queued"}
+        for key, value in previous.items():
+            if value is None:
+                task.pop(key, None)
+            else:
+                task[key] = value
+        task["lease"] = None
+        event(task, "released", worker=worker, by=by, epoch=epoch, restored=task["status"])
+        return copy.deepcopy(task)
+    return store.change(mutate)
+
+
+def attach_pr(store, task_id, epoch, number, draft):
+    """Link a PR only to the attempt that produced it; a stale result is refused."""
+    def mutate(state):
+        task = state["tasks"].get(task_id)
+        if not task or task["epoch"] != epoch or task["status"] != "review" or task.get("pr") is not None:
+            return False
+        task.update(pr=number, pr_epoch=epoch, pr_draft=draft)
+        return True
+    return bool(store.change(mutate))
 
 
 def create_held(store, prompt, base, base_branch, worker, by=None, requested_by=None):
@@ -172,6 +212,7 @@ def update(store, task_id, worker, epoch, *, ttl=300, checkpoint=None, status=No
         if status:
             task["status"] = status
             task["lease"] = None
+            task.pop("held_from", None)
             check = (task.get("verification") or {}) if status == "review" else {}
             event(task, kind or status, reason=reason or "", worker=worker, by=by, epoch=epoch,
                   check=check.get("result"), changed_during_check=check.get("snapshot_changed_during_check"),
@@ -208,9 +249,9 @@ def retry(store, task_id, note=None, worker=None, by=None):
         if task["status"] not in REQUEUEABLE:
             raise RelayError("Only blocked, review or cancelled tasks can be retried")
         task["status"] = "queued"
-        retire_pr(task)
+        old = retire_pr(task)
         _note(task, note, by)
-        event(task, "retried", worker=worker, by=by, note=note or "")
+        event(task, "retried", worker=worker, by=by, note=note or "", retired_pr=old)
         return task_id
     return store.change(mutate)
 
@@ -243,7 +284,8 @@ def cancel(store, task_id, worker=None, by=None):
 def mark_done(store, task_id, pr, worker=None):
     def mutate(state):
         task = state["tasks"].get(task_id)
-        if not task or task["status"] != "review" or task.get("pr") != pr:
+        if (not task or task["status"] != "review" or task.get("pr") != pr
+                or task.get("pr_epoch") != task["epoch"]):
             return None
         task["status"] = "done"
         event(task, "done", worker=worker, pr=pr)
@@ -252,7 +294,7 @@ def mark_done(store, task_id, pr, worker=None):
 
 
 def command(store, comment_id, task_id, verb, text, worker, by):
-    """Apply one GitHub comment command at most once, recording its id under CAS."""
+    """Apply a GitHub comment command once while its id is among the last HANDLED_KEEP ids."""
     def mutate(state):
         handled = state.setdefault("handled", [])
         if comment_id in handled:
@@ -268,9 +310,9 @@ def command(store, comment_id, task_id, verb, text, worker, by):
             return "noted"
         if verb == "retry" and task["status"] in REQUEUEABLE:
             task["status"] = "queued"
-            retire_pr(task)
+            old = retire_pr(task)
             _note(task, text, by)
-            event(task, "retried", worker=worker, by=by, note=text, via="github")
+            event(task, "retried", worker=worker, by=by, note=text, via="github", retired_pr=old)
             return "requeued"
         if verb == "cancel" and task["status"] not in ("done", "cancelled"):
             task["status"] = "cancelled"

@@ -31,7 +31,10 @@ def detect(repo, remote):
     argv = gh_argv()
     if not match or not argv:
         return None
-    probe = subprocess.run([*argv, "auth", "status"], capture_output=True, timeout=30)
+    try:
+        probe = subprocess.run([*argv, "auth", "status"], capture_output=True, timeout=30)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
     return f"{match[1]}/{match[2]}" if probe.returncode == 0 else None
 
 
@@ -104,6 +107,15 @@ class GitHub:
                 raise
             pr = self.api("POST", self.repo("/pulls"), {**request, "draft": False})
         return pr["number"], pr.get("html_url"), bool(pr.get("draft"))
+
+    def find_pr(self, branch):
+        """An existing PR from this head branch, e.g. one created before a crash."""
+        owner = self.slug.split("/")[0]
+        found = self.api("GET", self.repo("/pulls"), head=f"{owner}:{branch}", state="all")
+        return found[0] if found else None
+
+    def close_pr(self, number):
+        return self.api("PATCH", self.repo(f"/pulls/{number}"), {"state": "closed"})
 
     def pull(self, number):
         return self.api("GET", self.repo(f"/pulls/{number}"))

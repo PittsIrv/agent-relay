@@ -3,6 +3,7 @@ import json
 import os
 import signal
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -47,6 +48,7 @@ class Worker:
         self.talk = Conversation(self.repo, {**self.cfg, "label": self.label}, self.store, emit)
         self.presence_every = presence
         self.sync_every = sync
+        self._syncing = None
         self.folder = private_dir(repo)
         self.heartbeat = heartbeat
         self.interval = interval
@@ -91,7 +93,7 @@ class Worker:
                     task = tasks.claim(self.store, self.worker, self.ttl, by=self.label, policy=policy)
                     if task:
                         config.update(self.repo, daily={today: used + 1})
-                        self.talk.flush(task)
+                        self.in_background(self.talk.flush, task)  # Never hold a fresh lease on GitHub.
                         self.attempt(task)
                         last_seen = 0
                     if once:
@@ -100,6 +102,8 @@ class Worker:
                         return
                     time.sleep(self.poll)
             finally:
+                if self._syncing:
+                    self._syncing.join(timeout=120)
                 self.announce("offline")
 
     def announce(self, mode):
@@ -112,6 +116,13 @@ class Worker:
                                                      "agent": self.agent, "mode": mode, "accepts": accepts})
         except RelayError as exc:
             self.emit(f"Presence update skipped: {exc}")
+
+    def in_background(self, fn, *args):
+        """One GitHub job at a time; if one is still running, the next periodic sync catches up."""
+        if self._syncing and self._syncing.is_alive():
+            return
+        self._syncing = threading.Thread(target=fn, args=args, name="relay-github", daemon=True)
+        self._syncing.start()
 
     def sync(self):
         try:
@@ -192,8 +203,9 @@ class Worker:
                         checkpoint()
                         last_checkpoint = time.monotonic()
                     if self.talk.gh and now - last_sync >= self.sync_every:
-                        # Keep applying /relay commands (cancel included) while this attempt runs.
-                        self.sync()
+                        # Keep applying /relay commands (cancel included) while this attempt runs,
+                        # on another thread so a slow GitHub never delays a heartbeat.
+                        self.in_background(self.sync)
                         last_sync = time.monotonic()
                     time.sleep(self.poll)
                 returncode = proc.wait()

@@ -2,7 +2,7 @@
 
 ## Automated (every CI run)
 
-38 tests on temporary bare Git remotes, independent clones, real child processes,
+42 tests on temporary bare Git remotes, independent clones, real child processes,
 fake agents and an offline `gh` stand-in (`agent_relay/fake_gh.py`). They never
 spend provider quota or write to GitHub.
 
@@ -53,6 +53,14 @@ Regressions for the 2026-11-06 independent review:
 - A hanging `gh` call times out without blocking task creation.
 - A failed `relay take` returns the task to the queue instead of stranding it.
 - The usage-limit hook publishes new work after the previous task was completed.
+
+Regressions for the re-review of those fixes:
+
+- A stale, late PR creation for an old attempt is closed as superseded and never
+  linked to the newer attempt; merging it does not complete the task.
+- Retrying a task in review closes its superseded PR on GitHub.
+- A `gh` call slower than the lease never costs a running worker its lease.
+- An issue created just before a crash is adopted, not duplicated.
 
 `relay demo` runs the headline scenario end to end.
 

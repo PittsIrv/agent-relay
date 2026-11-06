@@ -149,8 +149,7 @@ def take(repo, cfg, store, task_id, emit=print):
         git(repo, "switch", "--quiet", "-c", branch, start)
         config.update(repo, held={**(cfg.get("held") or {}), branch: task_id})
     except Exception:
-        tasks.update(store, task_id, cfg["worker"], task["epoch"], status="queued",
-                     reason="taking it locally failed; returned to the queue", by=who)
+        tasks.unhold(store, task_id, cfg["worker"], task["epoch"], by=who)
         raise
     Conversation(repo, {**cfg, "label": who}, store, emit).flush(task)
     emit(f"Holding {task_id} on local branch {branch} at {start[:10]}. Agents will not touch it.")

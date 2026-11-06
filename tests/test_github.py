@@ -169,6 +169,52 @@ class GitHubConversationTests(unittest.TestCase):
         self.edit_db(lambda db: db["pulls"][str(task["pr"])].update(merged=True))
         self.assertEqual(self.talk(self.a).sync("main")["done"], [task["id"]])
 
+    def test_stale_pr_creation_cannot_attach_to_a_newer_attempt(self):
+        task = self.add()
+        good_gh = config.load(self.b)["gh"]
+        config.update(self.b, gh=["false"])  # Bob's PR creation is "in flight" (fails for now).
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        stale = self.store.read()[1]["tasks"][task["id"]]
+        self.assertEqual((stale["status"], stale["pr"]), ("review", None))
+        tasks.retry(self.store, task["id"], worker=config.load(self.a)["worker"], by="alice")
+        mock(self.a, "finish-fresh", emit=quiet).run(once=True)
+        live = self.store.read()[1]["tasks"][task["id"]]
+        self.assertEqual(live["epoch"], 2)
+        config.update(self.b, gh=good_gh)
+        self.talk(self.b)._open_pr(stale, self.store.read()[1])  # Bob's stale request finally lands.
+        after = self.store.read()[1]["tasks"][task["id"]]
+        self.assertEqual(after["pr"], live["pr"])
+        late = [p for p in self.db()["pulls"].values() if p["head"] == stale["checkpoint"]["branch"]]
+        self.assertEqual([p["state"] for p in late], ["closed"])
+        self.edit_db(lambda db: db["pulls"][str(late[0]["number"])].update(merged=True))
+        self.assertEqual(self.talk(self.a).sync("main")["done"], [])
+
+    def test_retry_closes_the_superseded_pr(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        old = self.store.read()[1]["tasks"][task["id"]]["pr"]
+        tasks.retry(self.store, task["id"], worker=config.load(self.a)["worker"], by="alice")
+        self.talk(self.a).flush(self.store.read()[1]["tasks"][task["id"]])
+        self.assertEqual(self.db()["pulls"][str(old)]["state"], "closed")
+
+    def test_slow_github_never_costs_the_lease(self):
+        task = self.add()
+        slow = [sys.executable, "-c", "import time; time.sleep(4)"]  # Each GitHub call outlasts the lease.
+        config.update(self.b, gh=slow)
+        worker = mock(self.b, "slow-finish", emit=quiet, ttl=3, heartbeat=1, sync=0.1)
+        worker.run(once=True)
+        self.assertEqual(self.store.read()[1]["tasks"][task["id"]]["status"], "review")
+
+    def test_orphaned_issue_is_adopted_not_duplicated(self):
+        cfg = config.load(self.a)
+        task_id = tasks.add(self.store, "Orphan", self.base, base_branch="main", created_by=cfg["worker"])
+        talk = self.talk(self.a)
+        task = self.store.read()[1]["tasks"][task_id]
+        talk.gh.create_issue("Orphan", talk.issue_body(task))  # Created, then the client crashed.
+        task = talk.flush(task)
+        self.assertEqual(task["issue"], 1)
+        self.assertEqual(len(self.db()["issues"]), 1)
+
     def test_relay_owned_issue_is_never_imported_as_a_second_task(self):
         task = self.add()
         def unlink(db):  # Simulate the window between creating the issue and recording its number.
@@ -337,6 +383,12 @@ class InteractiveHandoffTests(unittest.TestCase):
             with self.assertRaisesRegex(Exception, "checkout failure"):
                 interactive.take(self.b, config.load(self.b), Store(self.b), task["id"], emit=quiet)
         self.assertEqual(self.tasks()[task["id"]]["status"], "queued")
+        mock(self.b, "error", emit=quiet).run(once=True)
+        self.assertEqual(self.tasks()[task["id"]]["status"], "blocked")
+        with patch("agent_relay.interactive.git", side_effect=flaky):
+            with self.assertRaisesRegex(Exception, "checkout failure"):
+                interactive.take(self.b, config.load(self.b), Store(self.b), task["id"], emit=quiet)
+        self.assertEqual(self.tasks()[task["id"]]["status"], "blocked", "a failed take restores, never requeues")
 
     def test_hook_publishes_new_work_after_the_previous_task_moved_on(self):
         (self.a / "answer.py").write_text("def answer():\n    return None\n")
