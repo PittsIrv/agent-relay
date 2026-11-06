@@ -350,6 +350,70 @@ class GitHubConversationTests(unittest.TestCase):
         self.assertNotEqual(back["pr"], old)
         self.assertEqual(self.db()["pulls"][str(old)]["state"], "closed")
 
+    def review_without_pr(self):
+        task = self.add()
+        good_gh = config.load(self.b)["gh"]
+        config.update(self.b, gh=["false"])  # Bob's PR creation is still "in flight".
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        config.update(self.b, gh=good_gh)
+        return self.store.read()[1]["tasks"][task["id"]]
+
+    def test_pr_published_during_a_failed_take_still_completes_the_task(self):
+        stale = self.review_without_pr()
+        held = tasks.hold(self.store, stale["id"], "alice-desk")
+        self.talk(self.b)._open_pr(stale, self.store.read()[1])  # Lands mid-take.
+        tasks.unhold(self.store, stale["id"], "alice-desk", held["epoch"])
+        after = self.store.read()[1]["tasks"][stale["id"]]
+        self.assertEqual((after["status"], after["epoch"]), ("review", stale["epoch"]))
+        self.assertEqual(self.db()["pulls"][str(after["pr"])]["state"], "open")
+        self.edit_db(lambda db: db["pulls"][str(after["pr"])].update(merged=True))
+        self.assertEqual(self.talk(self.a).sync("main")["done"], [stale["id"]])
+
+    def test_pr_publication_resumes_after_a_failed_take(self):
+        stale = self.review_without_pr()
+        held = tasks.hold(self.store, stale["id"], "alice-desk")
+        tasks.unhold(self.store, stale["id"], "alice-desk", held["epoch"])
+        after = self.talk(self.b).flush(self.store.read()[1]["tasks"][stale["id"]])
+        self.assertIsNotNone(after["pr"], "the original attempt can still open its PR")
+
+    def test_pr_merged_while_held_completes_the_task(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        pr = self.store.read()[1]["tasks"][task["id"]]["pr"]
+        tasks.hold(self.store, task["id"], "alice-desk")
+        self.edit_db(lambda db: db["pulls"][str(pr)].update(merged=True))
+        self.assertEqual(self.talk(self.a).sync("main")["done"], [task["id"]])
+        self.assertIsNone(self.store.read()[1]["tasks"][task["id"]]["lease"])
+
+    def test_hand_back_keeps_its_own_check_result(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        held = tasks.hold(self.store, task["id"], "alice-desk")
+        back = tasks.update(self.store, task["id"], "alice-desk", held["epoch"], status="review",
+                            verification={"result": "passed"})
+        self.assertIsNone(back["pr"])
+        self.assertEqual(back["verification"], {"result": "passed"})
+        self.assertEqual(back["events"][-1]["check"], "passed")
+
+    def test_retired_pr_is_never_attached_again(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        old = self.store.read()[1]["tasks"][task["id"]]
+        tasks.retry(self.store, task["id"], worker=config.load(self.a)["worker"], by="alice")
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        live = self.store.read()[1]["tasks"][task["id"]]
+        self.store.change(lambda st: st["tasks"][task["id"]].update(pr=None) or True)  # Even with the slot empty...
+        self.assertFalse(tasks.attach_pr(self.store, task["id"], live["epoch"], old["pr"], True))
+
+    def test_duplicate_checks_refuse_a_truncated_thread(self):
+        from unittest.mock import patch
+        task = self.add()
+        for i in range(130):
+            self.comment(task["issue"], f"chatter {i}", "alice")
+        with patch("agent_relay.github.MAX_PAGES", 1):
+            with self.assertRaisesRegex(Exception, "not risking a duplicate"):
+                self.talk(self.a).gh.issue_comments(task["issue"])
+
     def test_late_attach_from_the_old_attempt_never_closes_a_restored_pr(self):
         task = self.add()
         mock(self.b, "finish-fresh", emit=quiet).run(once=True)

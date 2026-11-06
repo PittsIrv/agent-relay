@@ -65,13 +65,17 @@ class GitHub:
         text = result.stdout.decode().strip()
         return json.loads(text) if text else None
 
-    def pages(self, path, **params):
-        """Follow page numbers until a short page; bounded so a huge repo cannot stall a worker."""
+    def pages(self, path, complete=False, **params):
+        """Follow page numbers until a short page; bounded so a huge repo cannot stall a worker.
+        With complete=True, hitting the bound raises instead of returning a partial list, for
+        duplicate checks that must see everything."""
         for page in range(1, MAX_PAGES + 1):
             items = self.api("GET", path, **params, per_page=100, page=page) or []
             yield from items
             if len(items) < 100:
                 return
+        if complete:
+            raise RelayError(f"More than {MAX_PAGES * 100} items at {path}; not risking a duplicate")
 
     def repo(self, suffix=""):
         return f"repos/{self.slug}{suffix}"
@@ -122,8 +126,8 @@ class GitHub:
     def pull(self, number):
         return self.api("GET", self.repo(f"/pulls/{number}"))
 
-    def labeled_issues(self, label="relay"):
-        issues = self.pages(self.repo("/issues"), labels=label, state="open")
+    def labeled_issues(self, label="relay", complete=False):
+        issues = self.pages(self.repo("/issues"), complete=complete, labels=label, state="open")
         return [issue for issue in issues if "pull_request" not in issue]
 
     def comments_since(self, since):
@@ -131,7 +135,7 @@ class GitHub:
         return list(self.pages(self.repo("/issues/comments"), since=since, sort="updated", direction="asc"))
 
     def issue_comments(self, number):
-        return list(self.pages(self.repo(f"/issues/{number}/comments")))
+        return list(self.pages(self.repo(f"/issues/{number}/comments"), complete=True))
 
     def can_write(self, login):
         """Cached for ten minutes so revoked access stops working; lookup failures are not cached."""

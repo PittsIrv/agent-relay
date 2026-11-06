@@ -207,3 +207,29 @@ Gemini
 - 2.1 Fetching unadvertised commits by SHA → **already required**: every read already fetches the exact state commit.
 - 2.2 PR numbers as identifiers → **agree**, they are unique per repository.
 - 3.2 Two fetches in `take` → **disagree**: the first prevents a hold nobody can find; the second is cheap.
+
+## Sixth independent review — 2026-11-06 (gpt-6-astra medium, gemini-3.1-pro-preview)
+
+Full text: `docs/reviews/2026-11-06-v0.2-fixes-5.review.md` and `.gemini.review.md`.
+GPT verdict: "do not ship"; Gemini verdict: "ship with fixes". Adjudication:
+
+GPT
+- 1.1 A failed take strands an in-flight PR publication (epoch moved on) → **agree**, fixed: a hold records the held attempt's epoch; that attempt may still attach its PR during the take, and a failed take restores the epoch (safe: nothing held a lease at it and the hold published nothing). Running tasks still requeue at the new epoch. Two tests (PR lands mid-take; PR creation starts after rollback).
+- 1.2 Hand-back erased its own check result → **agree**, fixed: the old PR is retired before the new verification is recorded. Test added.
+- 1.3 Page-cap exhaustion silently partial → **agree**, fixed: duplicate checks (comment markers, issue adoption) raise and defer on a truncated list; command sync and import stay bounded and documented. Test added.
+- 2.1 Attachment did not enforce terminal retirement → **agree**, fixed: a PR in `past_prs` is never attached again. Test added.
+- 2.2 Mixed-version clones → **agree**, documented: one Relay version per repository during alpha.
+- 3.1 Separate fencing from publication identity → **agree in part**: achieved by restoring the held attempt's epoch on rollback rather than a second counter.
+- 3.3 Repository-visible retirement queue → **disagree for now**, as before.
+- 4.2 PR merged while held → **agree**, fixed: it completes the task and clears the hold; the holder's branch is left alone. Test added.
+- 4.3 Slow-GitHub two-worker trace → **open**.
+- 5.4 Hold recovery runbook → **agree**, written in architecture.
+- 5.1–5.3 Missing handoff, `change`, `api` code in the package → **agree**: included next time.
+
+Gemini
+- 1.1 Silent truncation → **agree**, fixed (GPT 1.3).
+- 1.2 Duplicated methods in `github.py` → **disagree**: the source has none; overlapping excerpts in the package produced the duplicate. The package builder is fixed.
+- 2.1 Draft fallback depends on an exact error string → **agree, accepted**: any other error surfaces as a deferred PR, not a crash.
+- 2.2 String return of `attach_pr` → **already handled**: it returns a boolean.
+- 3.1 `pr_epoch` rebinding hard to verify → **agree**: replaced by restoring the held attempt's epoch.
+- 3.2 / 4.1 Double fetch and offline rollback → **disagree / documented** (runbook above).

@@ -99,9 +99,16 @@ The successor's goal comes from the owner's `relay handoff` message, an earlier
 is shared only after `relay hook install --share-prompt`.
 
 `relay take` puts a task in `held` for a person: workers skip it and its lease does
-not expire. It fetches first and returns the task to the queue if the local
-checkout fails. `relay handoff` (or `--review`) gives it back; anyone can free a
-forgotten hold with `relay retry` after `relay cancel`.
+not expire. A take is reversible: the task's PR stays linked, and if the local
+checkout fails the task returns exactly to its previous state (an expired running
+task returns to the queue). `relay handoff` (or `--review`) gives it back and, as
+new work, retires the earlier PR. If that PR is merged while the task is held, the
+task is done and the holder's local branch is simply left alone.
+
+To free a hold whose holder is gone (or whose rollback failed offline): find it in
+`relay status`, run `relay cancel TASK`, then `relay retry TASK`. This starts a new
+attempt from the latest checkpoint; the holder's local `relay/TASK` branch and any
+uncommitted changes are untouched.
 
 ## Checkpoints
 
@@ -135,9 +142,10 @@ checkpoint is saved and `snapshot_changed_during_check` is true.
   comment cursor, hook outcomes.
 - `.git/agent-relay/attempts/`: retained worktrees, private logs, prompts, recovery SHAs.
 
-Known bounds: comment sync, issue import and marker search read at most 2,000
-items per call; past that, commands can be missed, issues are not imported and
-duplicate checks can miss. A task stuck in `held` because its holder crashed is
+Known bounds: comment sync and issue import read at most 2,000 items per call;
+past that, commands can be missed and issues are not imported. Duplicate checks
+(comment markers, issue adoption) refuse to act on a truncated list and defer
+instead. A task stuck in `held` because its holder crashed is
 freed with `relay cancel` then `relay retry`; this starts a new attempt, so any
 earlier PR is closed as superseded and its check result is dropped.
 
@@ -146,6 +154,9 @@ state store, which serializes their writes; narration is serialized by a file lo
 On shutdown the worker waits up to two minutes for the GitHub thread; anything it
 leaves unfinished is detected by marker or head branch and finished the next time
 that clone runs. If it never runs again, a superseded PR may stay open; close it by hand.
+
+All collaborators on one repository should run the same Relay version: the
+semantics of `relay/state` (holds, PR retirement) change between alpha releases.
 
 Recovery from an ambiguous state push relies on `relay/state` history being
 append-only; do not rewrite or force-push it by hand. Two clones retiring the same

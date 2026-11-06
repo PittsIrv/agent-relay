@@ -172,7 +172,7 @@ class Conversation:
                     return task
                 owned = OWNED.format(task=task["id"])
                 # Adopt an issue that was created before a crash or timeout instead of opening another.
-                existing = next((i["number"] for i in self.gh.labeled_issues() if owned in (i.get("body") or "")), None)
+                existing = next((i["number"] for i in self.gh.labeled_issues(complete=True) if owned in (i.get("body") or "")), None)
                 number = existing or self.gh.create_issue(title(task), self.issue_body(task))
                 task = tasks.annotate(self.store, task["id"], issue=number)
                 self.emit(f"{'Adopted' if existing else 'Opened'} issue #{task['issue']} for {task['id']}")
@@ -266,7 +266,7 @@ class Conversation:
         report["commands"] = self._commands()
         _, state = self.store.read()
         for task in state["tasks"].values():
-            if task["status"] == "review" and task.get("pr"):
+            if task["status"] in ("review", "held") and task.get("pr"):
                 if (self.gh.pull(task["pr"]) or {}).get("merged"):
                     if tasks.mark_done(self.store, task["id"], task["pr"], worker=self.worker):
                         report["done"].append(task["id"])

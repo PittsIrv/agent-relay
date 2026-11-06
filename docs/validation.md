@@ -2,7 +2,7 @@
 
 ## Automated (every CI run)
 
-51 tests on temporary bare Git remotes, independent clones, real child processes,
+57 tests on temporary bare Git remotes, independent clones, real child processes,
 fake agents and an offline `gh` stand-in (`agent_relay/fake_gh.py`). They never
 spend provider quota or write to GitHub.
 
@@ -81,6 +81,15 @@ Regressions for the fifth review:
 - A stale retirement that lands while a take is in progress leaves the PR open,
   and the PR still completes the task after the take fails.
 - Handing back a taken task with `--review` opens a new PR and closes the old one.
+
+Regressions for the sixth review:
+
+- A PR whose creation was in flight when a take failed still links and completes
+  the task; if creation had not started, it starts after the rollback.
+- A PR merged while its task is held completes the task.
+- Handing back new work keeps its own check result while retiring the old PR.
+- A retired PR is never attached again.
+- Duplicate checks refuse a thread longer than the page cap.
 
 `relay demo` runs the headline scenario end to end.
 

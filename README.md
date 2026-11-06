@@ -151,8 +151,9 @@ Details and failure analysis: [architecture](docs/architecture.md) ·
 - Leases use wall-clock time; keep clocks synchronized. `relay/state` gains a
   commit per heartbeat and checkpoint branches accumulate; there is no pruning yet.
 - Sized for small groups: GitHub sync reads at most 2,000 comments or labelled
-  issues per call. Beyond that, commands in the overflow can be missed, issues past
-  the cap are not imported, and duplicate checks on very long threads can miss.
+  issues per call. Beyond that, commands in the overflow can be missed and issues
+  past the cap are not imported; duplicate checks defer rather than guess.
+- Alpha: everyone on a repository should run the same Relay version.
 - Windows is not supported (workers freeze and stop agents with POSIX process groups).
 
 ## Commands
