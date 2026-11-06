@@ -142,7 +142,8 @@ earlier PR is closed as superseded and its check result is dropped.
 Threads: a worker's heartbeat thread and its one GitHub thread share the clone's
 state store, which serializes their writes; narration is serialized by a file lock.
 On shutdown the worker waits up to two minutes for the GitHub thread; anything it
-leaves unfinished is detected by marker or head branch and finished on the next run.
+leaves unfinished is detected by marker or head branch and finished the next time
+that clone runs. If it never runs again, a superseded PR may stay open; close it by hand.
 
 No automatic pruning yet. Repository administrators must allow direct writes to
 `relay/*` branches while keeping normal protection on the main branch.

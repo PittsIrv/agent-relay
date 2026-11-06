@@ -81,8 +81,8 @@ class Store:
             # Only retry actual contention, not auth, branch protection, or outages.
             latest = output(self.repo, "ls-remote", "--refs", self.remote, STATE_REF)
             latest_sha = latest.split()[0] if latest else None
-            if latest_sha == sha:
-                return True  # Pushed; only a local bookkeeping step failed. Never apply twice.
+            if latest_sha and latest_sha != parent and self.landed(sha, latest_sha):
+                return True  # Pushed; only a local step failed. Never apply twice.
             if latest_sha != parent:
                 return False
             raise RelayError(result.stderr.decode(errors="replace").strip())
@@ -90,6 +90,14 @@ class Store:
 
     _locks = {}
     _guard = threading.Lock()
+
+    def landed(self, sha, tip):
+        """State history is append-only (every push names its exact parent), so a commit
+        landed if and only if it is an ancestor of the current tip."""
+        if sha == tip:
+            return True
+        git(self.repo, "fetch", "--quiet", "--no-tags", self.remote, tip)
+        return git(self.repo, "merge-base", "--is-ancestor", sha, tip, check=False).returncode == 0
 
     def change(self, mutate):
         """mutate may run again on contention; it must have no external side effects.

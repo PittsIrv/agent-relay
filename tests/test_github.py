@@ -326,6 +326,55 @@ class GitHubConversationTests(unittest.TestCase):
         self.edit_db(lambda db: db["pulls"][str(pr)].update(merged=True))
         self.assertEqual(self.talk(self.a).sync("main")["done"], [task["id"]])
 
+    def test_late_attach_from_the_old_attempt_never_closes_a_restored_pr(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        before = self.store.read()[1]["tasks"][task["id"]]
+        self.failing_take(self.a, task["id"])
+        self.assertTrue(tasks.attach_pr(self.store, task["id"], before["epoch"], before["pr"], True))
+        self.talk(self.b)._open_pr(before, self.store.read()[1])  # Bob's delayed attempt-1 completion.
+        self.talk(self.b)._retire(before["pr"], before)  # Even an explicit retirement is refused.
+        after = self.store.read()[1]["tasks"][task["id"]]
+        self.assertEqual(self.db()["pulls"][str(before["pr"])]["state"], "open")
+        self.assertFalse(any(ev["kind"] == "superseded" for ev in after["events"]))
+
+    def test_landed_push_is_never_applied_twice(self):
+        from subprocess import CompletedProcess
+        from unittest.mock import patch
+        from agent_relay import gitstore
+        real = gitstore.git
+        pushed = []
+        def landed_then_failed(repo, *args, **kwargs):
+            result = real(repo, *args, **kwargs)
+            if args[0] == "push" and not pushed and Path(repo) == self.a:
+                pushed.append(True)
+                Store(self.b).change(lambda st: st.setdefault("other", 1))  # Someone else pushes next.
+                return CompletedProcess(args, 1, b"", b"simulated local failure after the push landed")
+            return result
+        def bump(state):
+            state["count"] = state.get("count", 0) + 1
+            return state["count"]
+        with patch("agent_relay.gitstore.git", side_effect=landed_then_failed):
+            self.assertEqual(self.store.change(bump), 1)
+        state = self.store.read()[1]
+        self.assertEqual((state["count"], state["other"]), (1, 1))
+
+    def test_retirement_note_is_retried_after_a_partial_close(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        old = self.store.read()[1]["tasks"][task["id"]]["pr"]
+        tasks.retry(self.store, task["id"], worker=config.load(self.a)["worker"], by="alice")
+        talk = self.talk(self.a)
+        def outage(number, body):
+            raise interactive.RelayError("GitHub is down")
+        talk.gh.comment = outage
+        talk.flush(self.store.read()[1]["tasks"][task["id"]])  # Closed, but the note failed.
+        self.assertEqual(self.db()["pulls"][str(old)]["state"], "closed")
+        self.talk(self.a).flush(self.store.read()[1]["tasks"][task["id"]])
+        self.talk(self.a).flush(self.store.read()[1]["tasks"][task["id"]])
+        notes = [c for c in self.db()["comments"] if "relay-retired" in c["body"]]
+        self.assertEqual(len(notes), 1)
+
     def test_failed_take_of_an_expired_running_task_requeues_it(self):
         task = self.add()
         tasks.claim(self.store, "gone", ttl=1, now=time.time() - 60)

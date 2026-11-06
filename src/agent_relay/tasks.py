@@ -180,11 +180,12 @@ def attach_pr(store, task_id, epoch, number, draft, worker=None):
         task = state["tasks"].get(task_id)
         if not task:
             return None
-        if task.get("pr") == number and task.get("pr_epoch") == epoch:
-            return "attached"  # Already linked (a repeated flush): idempotent.
+        if task.get("pr") == number:
+            return "attached"  # Already the current PR (a repeat, or restored by a failed take).
         if task["epoch"] != epoch or task["status"] != "review" or task.get("pr") is not None:
-            task.setdefault("past_prs", []).append({"pr": number, "epoch": epoch})
-            event(task, "superseded", worker=worker, epoch=epoch, retired_pr=number)
+            if not any(p.get("pr") == number for p in task.get("past_prs", [])):
+                task.setdefault("past_prs", []).append({"pr": number, "epoch": epoch})
+                event(task, "superseded", worker=worker, epoch=epoch, retired_pr=number)
             return "superseded"
         task.update(pr=number, pr_epoch=epoch, pr_draft=draft)
         return "attached"

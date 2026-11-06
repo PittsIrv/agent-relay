@@ -17,6 +17,7 @@ from .github import GitHub
 
 MARKER = "<!-- relay:{task}:{n} -->"
 OWNED = "<!-- relay-task:{task} -->"
+RETIRED = "<!-- relay-retired:{task}:{pr} -->"
 SILENT = {"checkpoint", "created"}
 VERBS = ("note", "retry", "cancel")
 
@@ -217,11 +218,18 @@ class Conversation:
 
     def _retire(self, number, task):
         """Close a superseded attempt's PR so its `Closes #N` cannot close the live issue."""
+        current = self.store.read()[1]["tasks"].get(task["id"]) or {}
+        if current.get("pr") == number:
+            return  # Restored as the current PR (for example by a failed take): never close it.
         pull = self.gh.pull(number) or {}
-        if pull.get("state") == "open" and not pull.get("merged"):
-            self.gh.close_pr(number)  # Close first: a retried close never comments twice.
+        if pull.get("merged"):
+            return
+        if pull.get("state") == "open":
+            self.gh.close_pr(number)  # Close first; the note below is retried on its own marker.
+        note = RETIRED.format(task=task["id"], pr=number)
+        if not any(note in (c.get("body") or "") for c in self.gh.issue_comments(number)):
             self.gh.comment(number, f"Superseded by a newer attempt on task `{task['id']}`; closed. "
-                                    "The branch stays available for reference.")
+                                    f"The branch stays available for reference.\n{note}")
 
     def flush_all(self, state):
         for task in state["tasks"].values():

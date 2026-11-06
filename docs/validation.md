@@ -2,7 +2,7 @@
 
 ## Automated (every CI run)
 
-46 tests on temporary bare Git remotes, independent clones, real child processes,
+49 tests on temporary bare Git remotes, independent clones, real child processes,
 fake agents and an offline `gh` stand-in (`agent_relay/fake_gh.py`). They never
 spend provider quota or write to GitHub.
 
@@ -68,6 +68,13 @@ Regressions for the third review:
 - A failed `relay take` of an expired running task returns it to the queue, claimable.
 - Recording the same PR twice is a no-op, never a close.
 - Closing a stale PR during a GitHub outage is retried on the next flush.
+
+Regressions for the fourth review:
+
+- A late attach from the old attempt never closes the PR a failed take restored.
+- A state push that landed but reported a local failure, followed by another
+  writer's push, is applied exactly once.
+- A retirement note that failed after the PR closed is posted once, later.
 
 `relay demo` runs the headline scenario end to end.
 

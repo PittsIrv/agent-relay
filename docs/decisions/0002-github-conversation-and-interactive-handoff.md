@@ -167,3 +167,19 @@ naming rollback and supersession invariants. Adjudication:
 - 4.2 Slow-sync test only covers failing slow calls → **agree, open**: a successful slow `gh` stand-in is future test work.
 - 4.4 Real two-machine trace → **open**, as before.
 - 5.2–5.4 Documentation gaps → **agree**, fixed in README, architecture and validation.
+
+## Fourth independent review — 2026-11-06 (gpt-6-astra high)
+
+Full text: `docs/reviews/2026-11-06-v0.2-fixes-3.review.md`. Verdict: "do not ship",
+naming two blocking interleavings. Adjudication:
+
+- 1.1 A delayed old-epoch attach can retire the PR a failed take restored → **agree**, fixed: the current PR is never recorded as superseded, and `_retire` re-reads state and never closes the current PR. Test added.
+- 1.2 Push recovery replays a landed mutation if another writer pushes next → **agree**, fixed: a push counts as landed if its commit is an ancestor of the remote tip (state history is append-only: every push names its exact parent). Test injects the interleaving.
+- 1.3 Retirement note lost after a partial close → **agree**, fixed: the note carries its own marker and is retried independently of the close. Test added.
+- 2.1 Rollback vs another flusher's earlier snapshot → **agree**, fixed by the same current-PR guard at close time.
+- 2.2 Head branch identifies the attempt → **already true**: checkpoint branches are `relay/checkpoints/<task>/<epoch>`, one per attempt; closed-unmerged PRs are skipped.
+- 2.3 Retirement depends on the acting clone returning → **agree, accepted limit**; docs and the shutdown message now say "this clone" and give the manual fallback.
+- 2.4 Unlocked reads → **disagree**: `read` only runs `ls-remote`, an exact-object fetch and `git show`; none takes local ref locks.
+- 3.3 Repeated stale attach appends duplicates → **agree**, fixed: one supersession record per PR.
+- 4.4 Successful slow-GitHub two-worker trace → **open**, with the real two-machine trace.
+- 5.1, 5.3 Package lacked full context and a test record → **agree**: the next package includes the full touched functions and the suite output.
