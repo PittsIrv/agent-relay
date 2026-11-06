@@ -309,3 +309,19 @@ verdict: "ship". Adjudication:
 - 2.2 "Posted" used as proof of safety work → **agree**, fixed by 1.1.
 - 3.3 Broad deferrable exception set hides programming errors → **disagree for the alpha**: every deferral is printed with its message, and the suite exercises these paths.
 - 5.3 Meaning of an empty `pull` result → `gh api` returns the PR or raises; an empty result is treated as nothing to close.
+
+## Eleventh independent review — 2026-11-06 (gpt-6-astra medium, gemini-3.1-pro-preview)
+
+Full text: `docs/reviews/2026-11-06-v0.2-fixes-10.review.md` and `.gemini.review.md`.
+GPT verdict: "ship with fixes"; Gemini verdict: "ship". This is the first round with no
+"do not ship". Fixes applied before merge:
+
+- 1.1 / 3.1 A local receipt suppresses re-closing a reopened PR → **agree**, resolved by GPT's bounded option: each superseded PR is closed once; a person reopening it is a deliberate override and stays open. Close and note receipts are now separate, so a failed note is retried without re-closing. Documented.
+- 1.2 / 3.2 The refused-attach path still retired outside the isolated reconciliation → **agree**, fixed: it now reconciles the refreshed task through the same path. Test added.
+- 3.3 Diagnostics conflated close and note failures → **agree**, fixed.
+- 2.1 / 5.1 Which clones revisit a task → documented: every clone with an event on it, on every sync.
+- 2.2 Retirement terminal across all writers → **already true** by the invariant stated in the ninth round.
+- 4.1 Refreshed-snapshot interleaving test → **agree in part**: the defect class is removed (closing no longer consults narration); the refused-attach test covers the refreshed-task path.
+
+Decision: merge after CI passes on this revision. Open beyond this release: a real
+two-machine GitHub trace and a delayed-GitHub two-worker trace.

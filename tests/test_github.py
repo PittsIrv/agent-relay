@@ -491,6 +491,28 @@ class GitHubConversationTests(unittest.TestCase):
         self.talk(self.a).flush(self.store.read()[1]["tasks"][task["id"]])
         self.assertEqual(len([c for c in self.db()["comments"] if "relay-retired" in c["body"]]), 1)
 
+    def test_a_refused_late_pr_with_a_failing_note_still_lets_narration_through(self):
+        task = self.add()
+        good_gh = config.load(self.b)["gh"]
+        config.update(self.b, gh=["false"])
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        stale = self.store.read()[1]["tasks"][task["id"]]
+        tasks.retry(self.store, task["id"], worker=config.load(self.a)["worker"], by="alice")
+        mock(self.a, "finish-fresh", emit=quiet).run(once=True)
+        config.update(self.b, gh=good_gh)
+        talk = self.talk(self.b)
+        real = talk.gh.comment
+        def notes_fail(number, body):
+            if "relay-retired" in body:
+                raise interactive.RelayError("comments locked on this PR")
+            return real(number, body)
+        talk.gh.comment = notes_fail
+        talk.flush(stale)  # Bob's late PR is refused; its note fails; Bob's narration still posts.
+        late = [p for p in self.db()["pulls"].values() if p["head"] == stale["checkpoint"]["branch"]]
+        self.assertEqual([p["state"] for p in late], ["closed"])
+        bodies = [c["body"] for c in self.db()["comments"] if c["issue_url"].endswith(f"/issues/{task['issue']}")]
+        self.assertTrue(any("finished attempt 1" in b for b in bodies))
+
     def test_a_failed_close_does_not_stop_the_next_one(self):
         task = self.add()
         alice = config.load(self.a)["worker"]

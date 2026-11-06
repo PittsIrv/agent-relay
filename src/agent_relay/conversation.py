@@ -209,32 +209,42 @@ class Conversation:
             self.emit(f"Could not open a PR for {task['id']}: {exc}")
             return task
         if not tasks.attach_pr(self.store, task["id"], epoch, number, draft, worker=self.worker):
-            # The task moved to a newer attempt while this PR was being created. The refusal is
-            # recorded as a "superseded" event, so a failed close here is retried on a later flush.
-            self._retire(number, task)
-            return self.store.read()[1]["tasks"][task["id"]]
+            # The task moved to a newer attempt while this PR was being created. The refusal put
+            # the PR in past_prs; close it through the same isolated reconciliation as any other.
+            fresh = self.store.read()[1]["tasks"][task["id"]]
+            self._reconcile_retired(fresh)
+            return fresh
         self.emit(f"Opened {'draft ' if draft else ''}PR #{number} {url or ''}".rstrip())
         return self.store.read()[1]["tasks"][task["id"]]
 
     def _reconcile_retired(self, task):
         """Close every superseded PR recorded in shared state (past_prs), each on its own, and
         explain it once. Driven by durable state, not by which events were narrated, so any
-        clone that works on the task finishes cleanup another clone left."""
-        handled = set(self._load("retired.json", []))
+        clone that works on the task finishes cleanup another clone left. Each PR is closed
+        once: a person who reopens a superseded PR has overridden Relay, and it stays open."""
+        closed = set(self._load("retired.json", []))
+        noted = set(self._load("retired-notes.json", []))
         for entry in task.get("past_prs", []):
             number, key = entry.get("pr"), f"{task['id']}:{entry.get('pr')}"
-            if not number or key in handled:
+            if not number or key in noted:
                 continue
-            try:
-                self._close_superseded(number, task)
+            if key not in closed:
                 try:
-                    self._note_superseded(number, task)
-                except Truncated:
-                    pass  # A thread too long to check for the note: skip the courtesy note.
-                handled.add(key)
-                self._save("retired.json", sorted(handled))
+                    self._close_superseded(number, task)
+                except DEFERRABLE as exc:
+                    self.emit(f"Closing superseded PR #{number} deferred: {exc}")
+                    continue
+                closed.add(key)
+                self._save("retired.json", sorted(closed))
+            try:
+                self._note_superseded(number, task)
+            except Truncated:
+                pass  # A thread too long to check for the note: skip the courtesy note.
             except DEFERRABLE as exc:
-                self.emit(f"Closing superseded PR #{number} deferred: {exc}")
+                self.emit(f"Note on closed PR #{number} deferred: {exc}")
+                continue
+            noted.add(key)
+            self._save("retired-notes.json", sorted(noted))
 
     def _retire(self, number, task):
         self._close_superseded(number, task)

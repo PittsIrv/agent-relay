@@ -157,7 +157,10 @@ another, a failed note never holds up the issue thread, and cleanup does not dep
 on the clone that retired the PR coming back. The explanatory note is skipped if
 the PR's thread is too long to check. A superseded PR that someone merges before it
 is closed still closes the issue through `Closes #N`; Relay does not count it as
-completing the task. `take`, `handoff` and the hook run one
+completing the task. Each superseded PR is closed once: if a person reopens it,
+that is a deliberate override and Relay leaves it open. "Every clone that works on
+a task" means every clone with an event on it (a claim, a hand-off, a command it
+applied); such clones revisit the task on every sync. `take`, `handoff` and the hook run one
 at a time per clone and reread the clone's hold records once they have the lock.
 This orders Relay commands only; it does not freeze the working tree against an
 editor or plain Git commands. A task stuck in `held` because its holder crashed is
