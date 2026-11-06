@@ -168,16 +168,7 @@ class Conversation:
         with (self.folder / "conversation.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             posted = set(self._load("posted.json", []))
-            # Close superseded PRs before anything else, each on its own: that is safety work and
-            # must not wait on issue adoption, PR creation, comment checks or another PR's failure.
-            retired = [ev["retired_pr"] for ev in task["events"] if ev.get("retired_pr")
-                       and ev.get("worker") == self.worker and f"{task['id']}:{ev.get('n')}" not in posted]
-            failures = []
-            for number in retired:
-                try:
-                    self._close_superseded(number, task)
-                except DEFERRABLE as exc:
-                    failures.append(exc)
+            self._reconcile_retired(task)  # Safety work first; never gated on narration.
             if task.get("issue") is None:
                 if task.get("created_by") != self.worker:
                     return task
@@ -193,15 +184,6 @@ class Conversation:
                     task = self._open_pr(task, state)
             pending = [ev for ev in task["events"] if ev.get("worker") == self.worker and ev.get("n")
                        and ev["kind"] not in SILENT and f"{task['id']}:{ev['n']}" not in posted]
-            for number in retired:
-                try:
-                    self._note_superseded(number, task)
-                except Truncated:
-                    pass  # A thread too long to check for the note: skip the courtesy note.
-                except DEFERRABLE as exc:
-                    failures.append(exc)
-            if failures:
-                raise failures[0]  # Defer this task's narration; closes already done stay done.
             if pending:
                 # A crash between posting and recording must not post twice: check the thread itself.
                 remote = "\n".join(c.get("body") or "" for c in self.gh.issue_comments(task["issue"]))
@@ -233,6 +215,26 @@ class Conversation:
             return self.store.read()[1]["tasks"][task["id"]]
         self.emit(f"Opened {'draft ' if draft else ''}PR #{number} {url or ''}".rstrip())
         return self.store.read()[1]["tasks"][task["id"]]
+
+    def _reconcile_retired(self, task):
+        """Close every superseded PR recorded in shared state (past_prs), each on its own, and
+        explain it once. Driven by durable state, not by which events were narrated, so any
+        clone that works on the task finishes cleanup another clone left."""
+        handled = set(self._load("retired.json", []))
+        for entry in task.get("past_prs", []):
+            number, key = entry.get("pr"), f"{task['id']}:{entry.get('pr')}"
+            if not number or key in handled:
+                continue
+            try:
+                self._close_superseded(number, task)
+                try:
+                    self._note_superseded(number, task)
+                except Truncated:
+                    pass  # A thread too long to check for the note: skip the courtesy note.
+                handled.add(key)
+                self._save("retired.json", sorted(handled))
+            except DEFERRABLE as exc:
+                self.emit(f"Closing superseded PR #{number} deferred: {exc}")
 
     def _retire(self, number, task):
         self._close_superseded(number, task)

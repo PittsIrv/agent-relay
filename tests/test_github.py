@@ -464,6 +464,33 @@ class GitHubConversationTests(unittest.TestCase):
             self.talk(self.a).flush(self.store.read()[1]["tasks"][task["id"]])
         self.assertEqual([self.db()["pulls"][str(n)]["state"] for n in (first, second)], ["closed", "closed"])
 
+    def test_another_clone_finishes_cleanup_the_retiring_clone_left(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        old = self.store.read()[1]["tasks"][task["id"]]["pr"]
+        tasks.retry(self.store, task["id"], worker=config.load(self.a)["worker"], by="alice")  # Alice never flushes.
+        self.talk(self.b).flush(self.store.read()[1]["tasks"][task["id"]])
+        self.assertEqual(self.db()["pulls"][str(old)]["state"], "closed")
+
+    def test_a_failing_pr_note_never_blocks_issue_narration(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        old = self.store.read()[1]["tasks"][task["id"]]["pr"]
+        tasks.retry(self.store, task["id"], worker=config.load(self.a)["worker"], by="alice", note="try again")
+        talk = self.talk(self.a)
+        real = talk.gh.comment
+        def pr_comments_fail(number, body):
+            if number == old:
+                raise interactive.RelayError("comments locked on this PR")
+            return real(number, body)
+        talk.gh.comment = pr_comments_fail
+        talk.flush(self.store.read()[1]["tasks"][task["id"]])
+        issue_bodies = [c["body"] for c in self.db()["comments"] if c["issue_url"].endswith(f"/issues/{task['issue']}")]
+        self.assertTrue(any("try again" in b for b in issue_bodies), "the retry was narrated")
+        self.assertEqual(self.db()["pulls"][str(old)]["state"], "closed")
+        self.talk(self.a).flush(self.store.read()[1]["tasks"][task["id"]])
+        self.assertEqual(len([c for c in self.db()["comments"] if "relay-retired" in c["body"]]), 1)
+
     def test_a_failed_close_does_not_stop_the_next_one(self):
         task = self.add()
         alice = config.load(self.a)["worker"]
@@ -473,6 +500,7 @@ class GitHubConversationTests(unittest.TestCase):
         mock(self.b, "finish-fresh", emit=quiet).run(once=True)
         second = self.store.read()[1]["tasks"][task["id"]]["pr"]
         tasks.retry(self.store, task["id"], worker=alice, by="alice")
+        self.edit_db(lambda db: db["pulls"][str(first)].update(state="open"))  # Both still open for Alice.
         talk = self.talk(self.a)
         real = talk.gh.close_pr
         def flaky(number):

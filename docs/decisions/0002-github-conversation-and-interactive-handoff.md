@@ -294,3 +294,18 @@ GPT
 - 5.2 Excerpt placed methods under the exception class → **agree**: a packaging artifact; the next package names the enclosing class.
 
 Gemini: "ship"; no new findings beyond those above.
+
+## Tenth independent review — 2026-11-06 (gpt-6-astra medium, gemini-3.1-pro-preview)
+
+Full text: `docs/reviews/2026-11-06-v0.2-fixes-9.review.md` and `.gemini.review.md`.
+GPT verdict: "do not ship" (it now accepts the restoration-race rebuttal); Gemini
+verdict: "ship". Adjudication:
+
+- 1.1 A retirement event in a refreshed snapshot could be marked posted without closing its PR → **agree**, fixed as GPT proposes (3.1): closing is reconciled against the task's durable `past_prs` list, with a local per-PR receipt, and no longer depends on which events were narrated.
+- 1.2 A PR-only note failure blocked issue narration → **agree** (our earlier claim was wrong), fixed: notes are retried from the same reconciliation and never block narration. Test added.
+- 1.3 Some close failures had no diagnostic → **agree**, fixed: each deferred close is reported.
+- 1.4 A superseded PR merged before it is closed still closes the issue → **agree, accepted limit**, documented.
+- 2.1 / 4.2 Cleanup depended on the retiring clone → **agree**, fixed by 1.1: any clone working on the task closes its past PRs. Test added.
+- 2.2 "Posted" used as proof of safety work → **agree**, fixed by 1.1.
+- 3.3 Broad deferrable exception set hides programming errors → **disagree for the alpha**: every deferral is printed with its message, and the suite exercises these paths.
+- 5.3 Meaning of an empty `pull` result → `gh api` returns the PR or raises; an empty result is treated as nothing to close.

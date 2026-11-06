@@ -148,9 +148,16 @@ checkpoint is saved and `snapshot_changed_during_check` is true.
 Known bounds: comment sync and issue import read at most 2,000 items per call;
 past that, commands can be missed and issues are not imported. Duplicate checks
 (comment markers, issue adoption) refuse to act on a truncated list and defer
-instead. Closing superseded PRs runs first, one PR at a time, and is not blocked by
-those checks or by another PR's failure; the explanatory note on a closed PR is
-skipped if its thread is too long to check. `take`, `handoff` and the hook run one
+instead.
+
+Superseded PRs are closed from shared state (the task's list of past PRs), not from
+narration: every clone that works on a task closes any of its past PRs still open,
+one at a time, first thing in each GitHub update. One PR's failure never stops
+another, a failed note never holds up the issue thread, and cleanup does not depend
+on the clone that retired the PR coming back. The explanatory note is skipped if
+the PR's thread is too long to check. A superseded PR that someone merges before it
+is closed still closes the issue through `Closes #N`; Relay does not count it as
+completing the task. `take`, `handoff` and the hook run one
 at a time per clone and reread the clone's hold records once they have the lock.
 This orders Relay commands only; it does not freeze the working tree against an
 editor or plain Git commands. A task stuck in `held` because its holder crashed is
@@ -161,7 +168,9 @@ Threads: a worker's heartbeat thread and its one GitHub thread share the clone's
 state store, which serializes their writes; narration is serialized by a file lock.
 On shutdown the worker waits up to two minutes for the GitHub thread; anything it
 leaves unfinished is detected by marker or head branch and finished the next time
-that clone runs. If it never runs again, a superseded PR may stay open; close it by hand.
+that clone runs. Narration belongs to the clone whose event it is; if that clone
+never runs again its comments are not posted, though superseded PRs are still closed
+by any other clone working on the task.
 
 All collaborators on one repository should run the same Relay version: the
 semantics of `relay/state` (holds, PR retirement) change between alpha releases.

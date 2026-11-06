@@ -2,7 +2,7 @@
 
 ## Automated (every CI run)
 
-65 tests on temporary bare Git remotes, independent clones, real child processes,
+67 tests on temporary bare Git remotes, independent clones, real child processes,
 fake agents and an offline `gh` stand-in (`agent_relay/fake_gh.py`). They never
 spend provider quota or write to GitHub.
 
@@ -108,6 +108,11 @@ Regressions for the ninth review:
 
 - A failed close of one superseded PR does not stop the next; it is retried later.
 - Hold records missing from the clone's configuration read as empty, never stale.
+
+Regressions for the tenth review:
+
+- Another clone closes a superseded PR the retiring clone never got to.
+- A failing note on a PR never blocks the issue thread; the note posts once later.
 
 `relay demo` runs the headline scenario end to end.
 
