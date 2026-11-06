@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 380" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" role="img" aria-labelledby="t d">
+  <title id="t">Agent Relay handoff flow</title>
+  <desc id="d">Alice's Claude Code session hits a usage limit; a hook checkpoints her work to GitHub as an issue and branch; Bob's worker claims it, continues, and opens a draft pull request.</desc>
+  <style>
+    .bg{fill:#ffffff}.panel{fill:#f6f8fa;stroke:#d0d7de}.hub{fill:#eef1ff;stroke:#8b93ff}
+    .h{font-size:15px;font-weight:600;fill:#1f2328}.s{font-size:12.5px;fill:#59636e}.b{font-size:13px;fill:#1f2328}
+    .chip{fill:#ffffff;stroke:#d0d7de}.chipa{fill:#fff4e5;stroke:#f0b45b}.chipb{fill:#e9f7ef;stroke:#5fb987}
+    .arrow{stroke:#5b5fe0;stroke-width:2;fill:none}.head{fill:#5b5fe0}.n{font-size:11px;font-weight:700;fill:#ffffff}.dot{fill:#5b5fe0}
+    @media (prefers-color-scheme: dark){
+      .bg{fill:#0d1117}.panel{fill:#161b22;stroke:#30363d}.hub{fill:#1b1f3a;stroke:#6e76ff}
+      .h,.b{fill:#e6edf3}.s{fill:#9198a1}.chip{fill:#0d1117;stroke:#30363d}
+      .chipa{fill:#2d2110;stroke:#b07a2a}.chipb{fill:#10291b;stroke:#3a8a5c}
+      .arrow{stroke:#8b8fff}.head,.dot{fill:#8b8fff}
+    }
+  </style>
+  <rect class="bg" width="880" height="380" rx="12"/>
+  <defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="head" d="M0,0 L10,5 L0,10 z"/></marker></defs>
+
+  <rect class="panel" x="20" y="24" width="250" height="332" rx="10"/>
+  <text class="h" x="40" y="54">Alice's laptop</text>
+  <text class="s" x="40" y="74">her login, her quota</text>
+  <rect class="chipa" x="40" y="94" width="210" height="52" rx="8"/>
+  <text class="b" x="54" y="116">Claude Code, interactive</text>
+  <text class="s" x="54" y="135">"Rate limit reached"</text>
+  <rect class="chip" x="40" y="166" width="210" height="68" rx="8"/>
+  <text class="b" x="54" y="188">StopFailure hook → relay</text>
+  <text class="s" x="54" y="207">snapshot uncommitted files</text>
+  <text class="s" x="54" y="224">no model call, branch untouched</text>
+  <text class="s" x="40" y="270">Alice can be asleep from here.</text>
+
+  <rect class="hub" x="315" y="24" width="250" height="332" rx="10"/>
+  <text class="h" x="335" y="54">GitHub repository</text>
+  <text class="s" x="335" y="74">shared by collaborators</text>
+  <rect class="chip" x="335" y="94" width="210" height="44" rx="8"/>
+  <text class="b" x="349" y="114">relay/state</text>
+  <text class="s" x="349" y="130">leases by compare-and-swap</text>
+  <rect class="chip" x="335" y="150" width="210" height="44" rx="8"/>
+  <text class="b" x="349" y="170">relay/checkpoints/…</text>
+  <text class="s" x="349" y="186">one branch per attempt</text>
+  <rect class="chip" x="335" y="206" width="210" height="62" rx="8"/>
+  <text class="b" x="349" y="226">Issue thread</text>
+  <text class="s" x="349" y="243">⏸ handed off · 🤖 picked up</text>
+  <text class="s" x="349" y="259">/relay note · retry · cancel</text>
+  <rect class="chip" x="335" y="280" width="210" height="44" rx="8"/>
+  <text class="b" x="349" y="300">Draft PR</text>
+  <text class="s" x="349" y="316">a person reviews and merges</text>
+
+  <rect class="panel" x="610" y="24" width="250" height="332" rx="10"/>
+  <text class="h" x="630" y="54">Bob's laptop</text>
+  <text class="s" x="630" y="74">his login, spare quota</text>
+  <rect class="chip" x="630" y="94" width="210" height="52" rx="8"/>
+  <text class="b" x="644" y="116">relay start --agent codex</text>
+  <text class="s" x="644" y="135">consent, limits, foreground</text>
+  <rect class="chipb" x="630" y="166" width="210" height="68" rx="8"/>
+  <text class="b" x="644" y="188">Codex continues Alice's code</text>
+  <text class="s" x="644" y="207">isolated worktree</text>
+  <text class="s" x="644" y="224">periodic checkpoints</text>
+  <rect class="chip" x="630" y="246" width="210" height="44" rx="8"/>
+  <text class="b" x="644" y="266">Bob's local check</text>
+  <text class="s" x="644" y="282">tests run on his machine</text>
+
+  <path class="arrow" d="M250,200 C285,200 295,172 333,172" marker-end="url(#m)"/>
+  <circle class="dot" cx="292" cy="186" r="10"/><text class="n" x="288.5" y="190">1</text>
+  <path class="arrow" d="M545,172 C580,172 592,190 628,195" marker-end="url(#m)"/>
+  <circle class="dot" cx="587" cy="182" r="10"/><text class="n" x="583.5" y="186">2</text>
+  <path class="arrow" d="M630,280 C595,290 585,302 547,302" marker-end="url(#m)"/>
+  <circle class="dot" cx="589" cy="293" r="10"/><text class="n" x="585.5" y="297">3</text>
+</svg>
