@@ -326,6 +326,30 @@ class GitHubConversationTests(unittest.TestCase):
         self.edit_db(lambda db: db["pulls"][str(pr)].update(merged=True))
         self.assertEqual(self.talk(self.a).sync("main")["done"], [task["id"]])
 
+    def test_retirement_overlapping_a_hold_never_closes_its_pr(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        before = self.store.read()[1]["tasks"][task["id"]]
+        held = tasks.hold(self.store, task["id"], "alice-desk")  # A take is in progress.
+        self.assertEqual(held["pr"], before["pr"], "a hold keeps the PR linked")
+        self.talk(self.b)._retire(before["pr"], before)  # A stale retirement lands mid-hold.
+        self.assertEqual(self.db()["pulls"][str(before["pr"])]["state"], "open")
+        tasks.unhold(self.store, task["id"], "alice-desk", held["epoch"])  # Then the take fails.
+        self.edit_db(lambda db: db["pulls"][str(before["pr"])].update(merged=True))
+        self.assertEqual(self.talk(self.a).sync("main")["done"], [task["id"]])
+
+    def test_handing_back_a_taken_task_retires_the_old_pr(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        old = self.store.read()[1]["tasks"][task["id"]]["pr"]
+        interactive.take(self.a, config.load(self.a), Store(self.a), task["id"], emit=quiet)
+        self.assertEqual(self.db()["pulls"][str(old)]["state"], "open", "taking is reversible")
+        (self.a / "answer.py").write_text("def answer():\n    return 42  # by hand\n")
+        back = interactive.handoff(self.a, config.load(self.a), Store(self.a), review=True, emit=quiet)
+        self.assertEqual(back["status"], "review")
+        self.assertNotEqual(back["pr"], old)
+        self.assertEqual(self.db()["pulls"][str(old)]["state"], "closed")
+
     def test_late_attach_from_the_old_attempt_never_closes_a_restored_pr(self):
         task = self.add()
         mock(self.b, "finish-fresh", emit=quiet).run(once=True)

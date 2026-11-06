@@ -74,8 +74,10 @@ can leave children running. Host death stops its processes but loses unsynced wo
 - **PRs.** The worker that finishes opens a draft PR from its checkpoint branch
   with `Closes #N`. Where GitHub rejects drafts ("Draft pull requests are not
   supported"), it opens a normal unmerged PR and says so in the comment. PRs belong
-  to an attempt: retrying or taking a task retires its PR, and only the current
-  attempt's PR can mark the task `done` when merged. A `--after` dependency counts
+  to an attempt: retrying a task, or handing back a taken one, retires its PR
+  (a take alone is reversible and leaves it linked), and only the current
+  attempt's PR can mark the task `done` when merged. Retirement never closes the
+  task's current PR. A `--after` dependency counts
   as done when its PR merges, wherever that PR's base branch is.
 - **Identity.** Comments run under each owner's own `gh` login. People are named in
   bold, never `@mentioned`.
@@ -144,6 +146,10 @@ state store, which serializes their writes; narration is serialized by a file lo
 On shutdown the worker waits up to two minutes for the GitHub thread; anything it
 leaves unfinished is detected by marker or head branch and finished the next time
 that clone runs. If it never runs again, a superseded PR may stay open; close it by hand.
+
+Recovery from an ambiguous state push relies on `relay/state` history being
+append-only; do not rewrite or force-push it by hand. Two clones retiring the same
+PR at the same moment can both post the explanatory note.
 
 No automatic pruning yet. Repository administrators must allow direct writes to
 `relay/*` branches while keeping normal protection on the main branch.

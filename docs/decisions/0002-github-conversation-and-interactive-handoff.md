@@ -183,3 +183,27 @@ naming two blocking interleavings. Adjudication:
 - 3.3 Repeated stale attach appends duplicates → **agree**, fixed: one supersession record per PR.
 - 4.4 Successful slow-GitHub two-worker trace → **open**, with the real two-machine trace.
 - 5.1, 5.3 Package lacked full context and a test record → **agree**: the next package includes the full touched functions and the suite output.
+
+## Fifth independent review — 2026-11-06 (gpt-6-astra medium, gemini-3.1-pro-preview)
+
+Full text: `docs/reviews/2026-11-06-v0.2-fixes-4.review.md` and `.gemini.review.md`.
+GPT-6 Astra at high effort timed out three times (15-minute read timeout, then a reset);
+medium effort completed. GPT verdict: "do not ship"; Gemini verdict: "ship". Adjudication:
+
+GPT
+- 1.1 `_retire` checks state before closing, so a retirement overlapping a reversible hold can close a PR the rollback restores → **agree**, fixed at the root as GPT proposes (3.1): a hold no longer unlinks or retires the PR. The PR is retired only when the holder hands back new work (a status change in a later attempt), which is irreversible. A failed take restores only the status. Overlap test added.
+- 1.2 The earlier test serialized the race away → **agree**, the new test holds, retires mid-hold, then rolls back.
+- 1.3 Ancestry-check errors treated as "not landed" → **agree**, fixed: exit codes other than 0 and 1 raise instead of retrying.
+- 1.4 Two clones can both post the retirement note → **agree, accepted limit**, documented.
+- 2.1 Append-only history assumes nobody rewrites `relay/state` → **agree**, documented as an operating requirement.
+- 2.2 Absent PR link treated as permission to close → **agree**, resolved by 1.1: retirement eligibility is now monotonic.
+- 3.3 Shared outbox → **disagree for now**, as before.
+- 4.3 Slow-GitHub two-worker trace → **open**.
+- 5.1–5.3 Docs and wrapper code missing from the package → **agree**: the next package includes them.
+
+Gemini
+- 1.1 `unhold` fails if the network is down, leaving a hold → **agree, documented** recovery (`relay cancel`, then `relay retry`).
+- 1.2 `unhold` overwrote `past_prs` → **agree**, fixed: holds no longer snapshot PR fields.
+- 2.1 Fetching unadvertised commits by SHA → **already required**: every read already fetches the exact state commit.
+- 2.2 PR numbers as identifiers → **agree**, they are unique per repository.
+- 3.2 Two fetches in `take` → **disagree**: the first prevents a hold nobody can find; the second is cheap.

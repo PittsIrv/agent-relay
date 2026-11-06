@@ -97,7 +97,10 @@ class Store:
         if sha == tip:
             return True
         git(self.repo, "fetch", "--quiet", "--no-tags", self.remote, tip)
-        return git(self.repo, "merge-base", "--is-ancestor", sha, tip, check=False).returncode == 0
+        code = git(self.repo, "merge-base", "--is-ancestor", sha, tip, check=False).returncode
+        if code not in (0, 1):
+            raise RelayError("Could not tell whether a state update landed; not retrying it")
+        return code == 0
 
     def change(self, mutate):
         """mutate may run again on contention; it must have no external side effects.

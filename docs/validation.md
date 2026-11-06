@@ -2,7 +2,7 @@
 
 ## Automated (every CI run)
 
-49 tests on temporary bare Git remotes, independent clones, real child processes,
+51 tests on temporary bare Git remotes, independent clones, real child processes,
 fake agents and an offline `gh` stand-in (`agent_relay/fake_gh.py`). They never
 spend provider quota or write to GitHub.
 
@@ -75,6 +75,12 @@ Regressions for the fourth review:
 - A state push that landed but reported a local failure, followed by another
   writer's push, is applied exactly once.
 - A retirement note that failed after the PR closed is posted once, later.
+
+Regressions for the fifth review:
+
+- A stale retirement that lands while a take is in progress leaves the PR open,
+  and the PR still completes the task after the take fails.
+- Handing back a taken task with `--review` opens a new PR and closes the old one.
 
 `relay demo` runs the headline scenario end to end.
 

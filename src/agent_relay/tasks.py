@@ -135,38 +135,29 @@ def hold(store, task_id, worker, by=None, now=None):
         expired = task["status"] == "running" and task["lease"]["until"] < current
         if task["status"] not in ("queued", *REQUEUEABLE) and not expired:
             raise RelayError(f"Task is {task['status']}; only queued, review, blocked or cancelled tasks can be taken")
-        # Remember what to restore if taking it locally fails before anything changes.
-        task["held_from"] = {k: copy.deepcopy(task.get(k)) for k in
-                             ("status", "pr", "pr_epoch", "pr_draft", "verification", "past_prs")}
-        old = retire_pr(task)
+        # A hold is reversible until the person hands work back, so its PR stays linked (and
+        # protected from retirement) until then; only the status is restored if taking fails.
+        task["held_from"] = {"status": task["status"]}
         task["epoch"] += 1
         task["status"] = "held"
         task["lease"] = {"worker": worker, "epoch": task["epoch"], "until": current + HELD_FOREVER, "human": True}
-        event(task, "held", worker=worker, by=by, epoch=task["epoch"], retired_pr=old)
+        event(task, "held", worker=worker, by=by, epoch=task["epoch"])
         return copy.deepcopy(task)
     return store.change(mutate)
 
 
 def unhold(store, task_id, worker, epoch, by=None):
-    """Undo a hold whose local checkout failed: restore the prior status and PR link."""
+    """Undo a hold whose local checkout failed: restore the prior status."""
     def mutate(state):
         task = state["tasks"].get(task_id)
         lease = task and task.get("lease")
         if not lease or lease["worker"] != worker or lease["epoch"] != epoch or task["status"] != "held":
             raise LeaseLost("Task is no longer held by this clone")
-        previous = task.pop("held_from", None) or {"status": "queued"}
-        for key, value in previous.items():
-            if value is None:
-                task.pop(key, None)
-            else:
-                task[key] = value
-        if task["status"] == "running":
-            task["status"] = "queued"  # Its lease had already expired; the task is reclaimable.
+        previous = (task.pop("held_from", None) or {}).get("status", "queued")
+        # An expired running task was reclaimable anyway.
+        task["status"] = "queued" if previous == "running" else previous
         if task.get("pr"):
-            task["pr_epoch"] = task["epoch"]  # The restored PR is again the current attempt's.
-        for ev in task["events"]:
-            if ev["kind"] == "held" and ev.get("epoch") == epoch:
-                ev.pop("retired_pr", None)  # Nothing to close: the PR was restored.
+            task["pr_epoch"] = task["epoch"]  # Its PR is again the current attempt's.
         task["lease"] = None
         event(task, "released", worker=worker, by=by, epoch=epoch, restored=task["status"])
         return copy.deepcopy(task)
@@ -225,13 +216,15 @@ def update(store, task_id, worker, epoch, *, ttl=300, checkpoint=None, status=No
         if verification is not None:
             task["verification"] = verification
         if status:
+            # New work from a later attempt supersedes an earlier attempt's PR, irreversibly.
+            retired = retire_pr(task) if task.get("pr") and task.get("pr_epoch") != epoch else None
             task["status"] = status
             task["lease"] = None
             task.pop("held_from", None)
             check = (task.get("verification") or {}) if status == "review" else {}
             event(task, kind or status, reason=reason or "", worker=worker, by=by, epoch=epoch,
                   check=check.get("result"), changed_during_check=check.get("snapshot_changed_during_check"),
-                  **facts(task), **extra)
+                  retired_pr=retired, **facts(task), **extra)
         return copy.deepcopy(task)
     return store.change(mutate)
 
