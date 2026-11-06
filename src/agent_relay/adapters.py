@@ -15,6 +15,28 @@ def command(agent, model=None):
     raise RelayError(f"Unknown agent: {agent}")
 
 
+def failure_detail(log):
+    """Short machine error code (e.g. authentication_failed) safe to share; never message text."""
+    code = status = None
+    for line in log.splitlines():
+        try:
+            value = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(value, dict):
+            continue
+        error = value.get("error")
+        if isinstance(error, dict):
+            error = error.get("code") or error.get("type")
+        if isinstance(error, str) and error.replace("_", "").isalnum() and len(error) <= 40:
+            code = error
+        if isinstance(value.get("api_error_status"), int):
+            status = value["api_error_status"]
+    if code:
+        return f"{code} (HTTP {status})" if status else code
+    return f"HTTP {status}" if status else None
+
+
 def failure_kind(log, returncode):
     """Only inspect error events, never ordinary agent prose quoting an error."""
     errors = []
@@ -25,7 +47,10 @@ def failure_kind(log, returncode):
             continue
         if not isinstance(value, dict):
             continue
-        if value.get("type") in ("error", "turn.failed") or value.get("is_error") is True:
+        if value.get("api_error_status") == 429:
+            return "quota"
+        # A top-level "error" key is structured CLI output (Claude Code sets it on API failures).
+        if value.get("type") in ("error", "turn.failed") or value.get("is_error") is True or "error" in value:
             errors.append(json.dumps(value).lower())
     text = "\n".join(errors)
     if any(term in text for term in ("usage_limit", "rate_limit", "rate limit", "usage limit", "quota exceeded", "hit your limit")):

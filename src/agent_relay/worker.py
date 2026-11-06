@@ -78,14 +78,19 @@ class Worker:
                         self.sync()
                         last_sync = time.monotonic()
                     cooling = cfg.get("cooldown_until", 0) > time.time()
-                    if cfg["mode"] != "pooled" or cooling:
+                    today = time.strftime("%Y-%m-%d")
+                    used = (cfg.get("daily") or {}).get(today, 0)
+                    capped = cfg.get("max_tasks_per_day") is not None and used >= cfg["max_tasks_per_day"]
+                    if cfg["mode"] != "pooled" or cooling or capped:
                         if once:
-                            self.emit("Worker is paused or cooling down; no task claimed.")
+                            self.emit("Worker is paused, cooling down, or at its daily task limit; no task claimed.")
                             return
                         time.sleep(self.poll)
                         continue
-                    task = tasks.claim(self.store, self.worker, self.ttl, by=self.label)
+                    policy = {"owner": cfg.get("owner"), "accept_from": cfg.get("accept_from")}
+                    task = tasks.claim(self.store, self.worker, self.ttl, by=self.label, policy=policy)
                     if task:
+                        config.update(self.repo, daily={today: used + 1})
                         self.talk.flush(task)
                         self.attempt(task)
                         last_seen = 0
@@ -99,8 +104,12 @@ class Worker:
 
     def announce(self, mode):
         try:
-            tasks.presence(self.store, self.worker, {"label": self.label, "owner": self.cfg.get("owner"),
-                                                     "agent": self.agent, "mode": mode})
+            cfg = config.load(self.repo)
+            accepts = ", ".join(cfg.get("accept_from") or []) or "any collaborator"
+            if cfg.get("max_tasks_per_day") is not None:
+                accepts += f"; up to {cfg['max_tasks_per_day']} tasks/day"
+            tasks.presence(self.store, self.worker, {"label": self.label, "owner": cfg.get("owner"),
+                                                     "agent": self.agent, "mode": mode, "accepts": accepts})
         except RelayError as exc:
             self.emit(f"Presence update skipped: {exc}")
 
@@ -192,13 +201,15 @@ class Worker:
             # Bound memory; raw provider logs remain local and are never uploaded.
             with log_path.open("rb") as log:
                 log.seek(max(0, log_path.stat().st_size - 2_000_000))
-                kind = adapters.failure_kind(log.read().decode(errors="replace"), returncode)
+                tail = log.read().decode(errors="replace")
+                kind = adapters.failure_kind(tail, returncode)
             if kind == "quota":
                 config.update(self.repo, cooldown_until=time.time() + self.cooldown)
                 renew(status="queued", kind="handoff", reason="usage limit reached")
                 self.emit(f"Handed off {task_id}; this worker will wait {self.cooldown}s before trying again.")
             elif kind == "error":
-                renew(status="blocked", reason="Agent failed; inspect local agent.log and retry")
+                detail = adapters.failure_detail(tail) or f"exit code {returncode}"
+                renew(status="blocked", reason=f"{self.agent} failed with {detail}; its owner can inspect the local agent.log")
             else:
                 checked_sha = parent
                 verification = self.verify(worktree, attempt_dir, renew)

@@ -28,6 +28,8 @@ The v0.1 alpha moves tasks between background workers through a hidden
 | D9 | A finished attempt opens a **draft** PR from its checkpoint branch with `Closes #N`. A merged PR marks the task `done`. Nothing merges automatically. | Review stays human; the PR is where people already review. | Auto-merge on a passing check. |
 | D10 | Add worker presence (last seen every 5 min) and `--after` dependencies. Dependent tasks start from the base branch head once their dependencies are merged. | "Who is online" and simple sequencing are the two scheduler features the use case needs; anything more waits for measurements. | A cost-based scheduler. |
 | D11 | Comments name people in bold, never with `@`. | Avoids notification spam from automated narration. | `@mentions`. |
+| D12 | Consent is per owner and per clone: `relay start` opts in; `--accept-from` limits whose requests the agent takes; `--max-tasks-per-day` caps it; `relay add --for LOGIN` or assigning the issue addresses one collaborator's agent. Defaults: any collaborator with write access, no cap. | The owner clarified on 2026-11-06 that the core case is asking a friend's agent with spare quota to work while their machine is on, with their consent. Assignment is how GitHub already says "this is for you". | A global pool with no addressing. |
+| D13 | Agent failures are classified from structured CLI output only. A top-level `error` field or HTTP 429 counts; the short error code (e.g. `authentication_failed (HTTP 401)`) is shared, message text is not. | Observed live: an expired Claude Code login emits `"error":"authentication_failed"` and `api_error_status: 401`. | Regex over the whole log. |
 
 ## Consequences
 

@@ -20,18 +20,22 @@ def event(task, kind, **fields):
     task["events"] = task["events"][-50:]
 
 
-def new_task(prompt, base, *, base_branch=None, created_by=None, after=(), issue=None):
+def new_task(prompt, base, *, base_branch=None, created_by=None, after=(), issue=None,
+             requested_by=None, for_=()):
     return {
         "id": uuid.uuid4().hex[:10], "prompt": prompt, "base": base,
         "base_branch": base_branch, "status": "queued", "epoch": 0,
         "checkpoint": None, "created_at": time.time(), "created_by": created_by,
         "after": list(after), "issue": issue, "pr": None, "notes": [],
         "events": [], "seq": 0, "lease": None,
+        "requested_by": requested_by, "for": sorted(set(for_)),
     }
 
 
-def add(store, prompt, base, *, base_branch=None, created_by=None, after=(), by=None):
-    task = new_task(prompt, base, base_branch=base_branch, created_by=created_by, after=after)
+def add(store, prompt, base, *, base_branch=None, created_by=None, after=(), by=None,
+        requested_by=None, for_=()):
+    task = new_task(prompt, base, base_branch=base_branch, created_by=created_by, after=after,
+                    requested_by=requested_by, for_=for_)
 
     def mutate(state):
         for dep in task["after"]:
@@ -45,9 +49,10 @@ def add(store, prompt, base, *, base_branch=None, created_by=None, after=(), by=
     return store.change(mutate)
 
 
-def import_issue(store, number, prompt, base, base_branch, worker, by):
+def import_issue(store, number, prompt, base, base_branch, worker, by, requested_by=None, for_=()):
     """Idempotent: an issue already linked to a task is never imported twice."""
-    task = new_task(prompt, base, base_branch=base_branch, created_by=worker, issue=number)
+    task = new_task(prompt, base, base_branch=base_branch, created_by=worker, issue=number,
+                    requested_by=requested_by, for_=for_)
 
     def mutate(state):
         if any(t.get("issue") == number for t in state["tasks"].values()):
@@ -65,11 +70,24 @@ def ready(task, state):
     return all(dep is not None and dep["status"] == "done" for dep in deps)
 
 
-def claim(store, worker, ttl=300, now=None, by=None, task_id=None):
+def allowed(task, policy):
+    """Owner consent: whose requests this worker accepts, and tasks addressed to someone else."""
+    if not policy:
+        return True
+    owner = policy.get("owner")
+    wanted = task.get("for") or []
+    if wanted and owner not in wanted:
+        return False
+    accept = policy.get("accept_from")
+    requester = task.get("requested_by")
+    return not accept or requester == owner or requester in accept
+
+
+def claim(store, worker, ttl=300, now=None, by=None, task_id=None, policy=None):
     def mutate(state):
         current = time.time() if now is None else now
         for task in sorted(state["tasks"].values(), key=lambda t: t["created_at"]):
-            if task_id and task["id"] != task_id:
+            if (task_id and task["id"] != task_id) or not allowed(task, policy):
                 continue
             expired = task["status"] == "running" and task["lease"]["until"] < current
             if not expired and (task["status"] != "queued" or not ready(task, state)):
@@ -101,9 +119,9 @@ def hold(store, task_id, worker, by=None, now=None):
     return store.change(mutate)
 
 
-def create_held(store, prompt, base, base_branch, worker, by=None):
+def create_held(store, prompt, base, base_branch, worker, by=None, requested_by=None):
     """Publish an interactive session's in-progress work as a new task held by its owner."""
-    task = new_task(prompt, base, base_branch=base_branch, created_by=worker)
+    task = new_task(prompt, base, base_branch=base_branch, created_by=worker, requested_by=requested_by)
 
     def mutate(state):
         fresh = copy.deepcopy(task)

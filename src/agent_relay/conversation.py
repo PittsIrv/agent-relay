@@ -80,7 +80,7 @@ class Conversation:
         who = f"**{self.who(ev, state)}**"
         kind = ev["kind"]
         if kind == "imported":
-            return f"📥 {who} queued this issue for the agent pool as task `{task['id']}`. Any opted-in agent can pick it up."
+            return f"📥 {who} queued this issue as task `{task['id']}`. {self.audience(task)}"
         if kind == "claimed":
             start = task.get("checkpoint")
             origin = f"the latest checkpoint {self.commit_link(start['sha'])}" if start else f"`{task.get('base_branch') or 'base'}` at {self.commit_link(task['base'])}"
@@ -114,9 +114,16 @@ class Conversation:
             return f"🎉 PR #{ev.get('pr')} was merged. Task `{task['id']}` is done; tasks waiting on it can start."
         return None
 
+    def audience(self, task):
+        if task.get("for"):
+            names = " or ".join(f"**{name}**'s" for name in task["for"])
+            return f"Requested from {names} agent; it starts when that machine is online and has quota."
+        return "Any opted-in collaborator's agent can pick it up."
+
     def issue_body(self, task):
         base = task.get("base_branch") or "base"
-        return (f"{task['prompt']}\n\n---\n_Agent Relay task `{task['id']}` from `{base}` at `{short(task['base'])}`. "
+        asked = f"{self.audience(task)}\n\n" if task.get("for") else ""
+        return (f"{task['prompt']}\n\n{asked}---\n_Agent Relay task `{task['id']}` from `{base}` at `{short(task['base'])}`. "
                 "Opted-in agents claim it, checkpoint to `relay/checkpoints/*`, and hand off on usage limits. "
                 "Collaborators can steer with `/relay note <text>`, `/relay retry [guidance]` or `/relay cancel`._")
 
@@ -201,8 +208,10 @@ class Conversation:
             if not refs:
                 raise RelayError(f"Default branch {default_branch!r} is not on the remote")
             prompt = issue["title"] + ("\n\n" + issue["body"] if issue.get("body") else "")
+            assignees = [person["login"] for person in issue.get("assignees") or []]
             task_id = tasks.import_issue(self.store, issue["number"], prompt, refs.split()[0],
-                                         default_branch, self.worker, by)
+                                         default_branch, self.worker, by,
+                                         requested_by=issue["user"]["login"], for_=assignees)
             if task_id:
                 report["imported"].append(issue["number"])
         report["commands"] = self._commands()

@@ -29,10 +29,14 @@ def parser():
     add.add_argument("prompt")
     add.add_argument("--base", help="Remote branch to start from; defaults to the current branch")
     add.add_argument("--after", action="append", default=[], metavar="TASK", help="Start only after TASK is merged (repeatable)")
+    add.add_argument("--for", dest="for_", action="append", default=[], metavar="OWNER",
+                     help="Ask a specific collaborator's agent (GitHub login); repeatable")
     start = sub.add_parser("start", help="Opt in and run a worker in the foreground; Ctrl-C hands off")
     start.add_argument("--agent", choices=["codex", "claude"], default="codex")
     start.add_argument("--model", help="Model name passed to the agent CLI")
     start.add_argument("--once", action="store_true", help="Attempt at most one task and exit")
+    start.add_argument("--accept-from", metavar="LOGINS", help="Comma-separated collaborators whose tasks you accept (default: anyone with write access)")
+    start.add_argument("--max-tasks-per-day", type=int, metavar="N", help="Stop accepting new tasks after N per local day")
     for name, default in [("checkpoint-seconds", 120), ("cooldown-seconds", 1800), ("max-runtime-seconds", 3600)]:
         start.add_argument(f"--{name}", type=int, default=default)
     handoff = sub.add_parser("handoff", help="Publish your own in-progress work so another agent can continue it")
@@ -86,6 +90,8 @@ def board(cfg, state):
         me = "  (this clone)" if worker_id == cfg["worker"] else ""
         state_word = info.get("mode", "?") if online else "offline"
         print(f"  {info.get('label', worker_id):28} {state_word:8} {doing:22} seen {ago(info.get('last_seen', 0))}{me}")
+        if online and info.get("accepts"):
+            print(f"  {'':28} accepts work from: {info['accepts']}")
     print("\nTASKS")
     if not state["tasks"]:
         print("  none yet: relay add 'your task'  (or label a GitHub issue 'relay')")
@@ -95,6 +101,8 @@ def board(cfg, state):
         if task.get("pr"):
             link += f" PR#{task['pr']}"
         waits = f" (after {', '.join(task['after'])})" if task.get("after") and not tasks.ready(task, state) else ""
+        if task.get("for") and task["status"] == "queued":
+            waits += f" (for {', '.join(task['for'])})"
         title = " ".join(task["prompt"].split())[:52]
         print(f"  {task['id']}  {task['status']:9} {cp:8} {link:13} {title}{waits}")
 
@@ -158,7 +166,7 @@ def main(argv=None):
                 raise RelayError("Base branch is not on the remote; push it before adding a task")
             sha = refs.split()[0]
             task_id = tasks.add(store, args.prompt, sha, base_branch=base, created_by=cfg["worker"],
-                                after=args.after, by=who)
+                                after=args.after, by=who, requested_by=cfg.get("owner"), for_=args.for_)
             task = talk.flush(store.read()[1]["tasks"][task_id])
             issue = f" as issue #{task['issue']}" if task.get("issue") else ""
             print(f"Queued {task_id}{issue} from {base}@{sha[:10]}. Task text is visible to repository collaborators.")
@@ -169,6 +177,9 @@ def main(argv=None):
                 raise RelayError(f"Install and sign in to {args.agent} first")
             if min(args.checkpoint_seconds, args.cooldown_seconds, args.max_runtime_seconds) < 10:
                 raise RelayError("Timing options must be at least 10 seconds")
+            if args.accept_from is not None or args.max_tasks_per_day is not None:
+                config.update(repo, accept_from=[x.strip() for x in (args.accept_from or "").split(",") if x.strip()] or None,
+                              max_tasks_per_day=args.max_tasks_per_day)
             worker = Worker(repo, args.agent, model=args.model, interval=args.checkpoint_seconds,
                             cooldown=args.cooldown_seconds, max_runtime=args.max_runtime_seconds)
             def stop(signum, frame):

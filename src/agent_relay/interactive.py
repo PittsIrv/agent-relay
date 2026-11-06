@@ -106,7 +106,7 @@ def handoff(repo, cfg, store, *, message=None, review=False, reason=None, agent=
             return None
         shared = last_prompt(hook["transcript_path"]) if hook and cfg.get("share_prompt") and hook.get("transcript_path") else None
         task = tasks.create_held(store, compose_prompt(repo, cfg.get("owner") or "a collaborator", branch, base, tree, message, shared), base, base_branch,
-                                 cfg["worker"], by=who)
+                                 cfg["worker"], by=who, requested_by=cfg.get("owner"))
 
     epoch = task["epoch"]
     sha = snapshot(repo, head, task["id"], epoch, label="interactive handoff")

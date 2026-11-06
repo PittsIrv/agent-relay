@@ -36,7 +36,7 @@ class GitHubConversationTests(unittest.TestCase):
     def add(self, prompt="Implement answer() returning 42", **kwargs):
         cfg = config.load(self.a)
         task_id = tasks.add(self.store, prompt, self.base, base_branch="main", created_by=cfg["worker"],
-                            by="alice", **kwargs)
+                            by="alice", requested_by="alice", **kwargs)
         return self.talk(self.a).flush(self.store.read()[1]["tasks"][task_id])
 
     def comment(self, number, body, login):
@@ -125,6 +125,33 @@ class GitHubConversationTests(unittest.TestCase):
         self.edit_db(lambda db: db["pulls"][str(task["pr"])].update(merged=True))
         self.assertEqual(self.talk(self.a).sync("main")["done"], [first["id"]])
         self.assertEqual(tasks.claim(Store(self.b), "probe")["id"], second["id"])
+
+    def test_assigned_issue_goes_only_to_that_owners_agent(self):
+        self.edit_db(lambda db: db["issues"].update({"7": {
+            "number": 7, "title": "Bob, please add median()", "body": "", "state": "open",
+            "labels": [{"name": "relay"}], "user": {"login": "alice"}, "assignees": [{"login": "bob"}]}}))
+        self.talk(self.a).sync("main")
+        task = next(iter(self.store.read()[1]["tasks"].values()))
+        self.assertEqual((task["for"], task["requested_by"]), (["bob"], "alice"))
+        self.assertIn("Requested from **bob**'s agent", self.db()["comments"][-1]["body"])
+        mock(self.a, "finish-fresh", emit=quiet).run(once=True)
+        self.assertEqual(self.store.read()[1]["tasks"][task["id"]]["epoch"], 0, "alice's agent must not take bob's request")
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        self.assertEqual(self.store.read()[1]["tasks"][task["id"]]["status"], "review")
+
+    def test_owner_consent_policy(self):
+        from_alice = self.add()
+        config.update(self.b, accept_from=["carol"])
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        self.assertEqual(self.store.read()[1]["tasks"][from_alice["id"]]["epoch"], 0)
+        config.update(self.b, accept_from=["alice"], max_tasks_per_day=1)
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        self.assertEqual(self.store.read()[1]["tasks"][from_alice["id"]]["status"], "review")
+        second = self.add("Another task")
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        self.assertEqual(self.store.read()[1]["tasks"][second["id"]]["epoch"], 0, "daily cap reached")
+        presence = self.store.read()[1]["workers"][config.load(self.b)["worker"]]
+        self.assertEqual(presence["accepts"], "alice; up to 1 tasks/day")
 
     def test_github_outage_never_blocks_a_handoff(self):
         cfg = config.load(self.a)
