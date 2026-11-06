@@ -303,6 +303,67 @@ class GitHubConversationTests(unittest.TestCase):
         self.assertEqual(len(self.db()["comments"]), 2, "deferred claim and handoff comments are posted later")
 
 
+    def failing_take(self, repo, task_id):
+        from unittest.mock import patch
+        real = interactive.git
+        def flaky(where, *args, **kwargs):
+            if args and args[0] == "switch":
+                raise interactive.RelayError("simulated checkout failure")
+            return real(where, *args, **kwargs)
+        with patch("agent_relay.interactive.git", side_effect=flaky):
+            with self.assertRaisesRegex(Exception, "checkout failure"):
+                interactive.take(repo, config.load(repo), Store(repo), task_id, emit=quiet)
+
+    def test_failed_take_of_a_reviewed_task_keeps_its_pr_live(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        pr = self.store.read()[1]["tasks"][task["id"]]["pr"]
+        self.failing_take(self.a, task["id"])
+        after = self.store.read()[1]["tasks"][task["id"]]
+        self.assertEqual((after["status"], after["pr"], after["pr_epoch"]), ("review", pr, after["epoch"]))
+        self.talk(self.a).flush(after)  # The rolled-back hold must not close the restored PR.
+        self.assertEqual(self.db()["pulls"][str(pr)]["state"], "open")
+        self.edit_db(lambda db: db["pulls"][str(pr)].update(merged=True))
+        self.assertEqual(self.talk(self.a).sync("main")["done"], [task["id"]])
+
+    def test_failed_take_of_an_expired_running_task_requeues_it(self):
+        task = self.add()
+        tasks.claim(self.store, "gone", ttl=1, now=time.time() - 60)
+        self.failing_take(self.a, task["id"])
+        after = self.store.read()[1]["tasks"][task["id"]]
+        self.assertEqual((after["status"], after["lease"]), ("queued", None))
+        self.assertEqual(tasks.claim(self.store, "pool")["id"], task["id"])
+
+    def test_pr_attachment_is_idempotent(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        live = self.store.read()[1]["tasks"][task["id"]]
+        self.assertTrue(tasks.attach_pr(self.store, task["id"], live["epoch"], live["pr"], True))
+        self.talk(self.b)._open_pr(live, self.store.read()[1])  # A repeated completion adopts, never closes.
+        self.assertEqual(self.db()["pulls"][str(live["pr"])]["state"], "open")
+        self.assertEqual(self.store.read()[1]["tasks"][task["id"]]["pr"], live["pr"])
+
+    def test_interrupted_close_of_a_stale_pr_is_retried(self):
+        task = self.add()
+        good_gh = config.load(self.b)["gh"]
+        config.update(self.b, gh=["false"])
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        stale = self.store.read()[1]["tasks"][task["id"]]
+        tasks.retry(self.store, task["id"], worker=config.load(self.a)["worker"], by="alice")
+        mock(self.a, "finish-fresh", emit=quiet).run(once=True)
+        config.update(self.b, gh=good_gh)
+        talk = self.talk(self.b)
+        def outage(number):
+            raise interactive.RelayError("GitHub is down")
+        talk.gh.close_pr = outage
+        talk.flush(stale)  # Bob's late PR is refused and recorded, but the close fails.
+        late = [p for p in self.db()["pulls"].values() if p["head"] == stale["checkpoint"]["branch"]]
+        self.assertEqual([p["state"] for p in late], ["open"])
+        self.talk(self.b).flush(self.store.read()[1]["tasks"][task["id"]])  # GitHub is back.
+        late = [p for p in self.db()["pulls"].values() if p["head"] == stale["checkpoint"]["branch"]]
+        self.assertEqual([p["state"] for p in late], ["closed"])
+
+
 class InteractiveHandoffTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

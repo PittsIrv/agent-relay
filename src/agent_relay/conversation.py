@@ -207,8 +207,9 @@ class Conversation:
         except RelayError as exc:
             self.emit(f"Could not open a PR for {task['id']}: {exc}")
             return task
-        if not tasks.attach_pr(self.store, task["id"], epoch, number, draft):
-            # The task moved to a newer attempt while this PR was being created.
+        if not tasks.attach_pr(self.store, task["id"], epoch, number, draft, worker=self.worker):
+            # The task moved to a newer attempt while this PR was being created. The refusal is
+            # recorded as a "superseded" event, so a failed close here is retried on a later flush.
             self._retire(number, task)
             return self.store.read()[1]["tasks"][task["id"]]
         self.emit(f"Opened {'draft ' if draft else ''}PR #{number} {url or ''}".rstrip())
@@ -218,9 +219,9 @@ class Conversation:
         """Close a superseded attempt's PR so its `Closes #N` cannot close the live issue."""
         pull = self.gh.pull(number) or {}
         if pull.get("state") == "open" and not pull.get("merged"):
-            self.gh.comment(number, f"Superseded by a newer attempt on task `{task['id']}`; closing. "
+            self.gh.close_pr(number)  # Close first: a retried close never comments twice.
+            self.gh.comment(number, f"Superseded by a newer attempt on task `{task['id']}`; closed. "
                                     "The branch stays available for reference.")
-            self.gh.close_pr(number)
 
     def flush_all(self, state):
         for task in state["tasks"].values():

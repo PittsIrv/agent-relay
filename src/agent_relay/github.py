@@ -112,7 +112,9 @@ class GitHub:
         """An existing PR from this head branch, e.g. one created before a crash."""
         owner = self.slug.split("/")[0]
         found = self.api("GET", self.repo("/pulls"), head=f"{owner}:{branch}", state="all")
-        return found[0] if found else None
+        # A PR someone closed without merging is not adopted; a fresh one is opened instead.
+        usable = [p for p in found or [] if p.get("state") == "open" or p.get("merged_at") or p.get("merged")]
+        return usable[0] if usable else None
 
     def close_pr(self, number):
         return self.api("PATCH", self.repo(f"/pulls/{number}"), {"state": "closed"})

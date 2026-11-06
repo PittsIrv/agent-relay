@@ -4,6 +4,7 @@ import json
 import os
 import random
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -80,13 +81,25 @@ class Store:
             # Only retry actual contention, not auth, branch protection, or outages.
             latest = output(self.repo, "ls-remote", "--refs", self.remote, STATE_REF)
             latest_sha = latest.split()[0] if latest else None
+            if latest_sha == sha:
+                return True  # Pushed; only a local bookkeeping step failed. Never apply twice.
             if latest_sha != parent:
                 return False
             raise RelayError(result.stderr.decode(errors="replace").strip())
         return True
 
+    _locks = {}
+    _guard = threading.Lock()
+
     def change(self, mutate):
-        """mutate may run again on contention; it must have no external side effects."""
+        """mutate may run again on contention; it must have no external side effects.
+        Threads of one process (heartbeat and GitHub sync) take turns per clone."""
+        with Store._guard:
+            lock = Store._locks.setdefault(str(self.repo.resolve()), threading.Lock())
+        with lock:
+            return self._change(mutate)
+
+    def _change(self, mutate):
         for attempt in range(10):
             parent, state = self.read()
             result = mutate(state)

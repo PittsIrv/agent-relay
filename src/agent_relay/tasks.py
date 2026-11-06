@@ -160,21 +160,35 @@ def unhold(store, task_id, worker, epoch, by=None):
                 task.pop(key, None)
             else:
                 task[key] = value
+        if task["status"] == "running":
+            task["status"] = "queued"  # Its lease had already expired; the task is reclaimable.
+        if task.get("pr"):
+            task["pr_epoch"] = task["epoch"]  # The restored PR is again the current attempt's.
+        for ev in task["events"]:
+            if ev["kind"] == "held" and ev.get("epoch") == epoch:
+                ev.pop("retired_pr", None)  # Nothing to close: the PR was restored.
         task["lease"] = None
         event(task, "released", worker=worker, by=by, epoch=epoch, restored=task["status"])
         return copy.deepcopy(task)
     return store.change(mutate)
 
 
-def attach_pr(store, task_id, epoch, number, draft):
-    """Link a PR only to the attempt that produced it; a stale result is refused."""
+def attach_pr(store, task_id, epoch, number, draft, worker=None):
+    """Link a PR only to the attempt that produced it. A stale PR is refused and recorded
+    as superseded first, so closing it on GitHub survives a crash or an outage."""
     def mutate(state):
         task = state["tasks"].get(task_id)
-        if not task or task["epoch"] != epoch or task["status"] != "review" or task.get("pr") is not None:
-            return False
+        if not task:
+            return None
+        if task.get("pr") == number and task.get("pr_epoch") == epoch:
+            return "attached"  # Already linked (a repeated flush): idempotent.
+        if task["epoch"] != epoch or task["status"] != "review" or task.get("pr") is not None:
+            task.setdefault("past_prs", []).append({"pr": number, "epoch": epoch})
+            event(task, "superseded", worker=worker, epoch=epoch, retired_pr=number)
+            return "superseded"
         task.update(pr=number, pr_epoch=epoch, pr_draft=draft)
-        return True
-    return bool(store.change(mutate))
+        return "attached"
+    return store.change(mutate) == "attached"
 
 
 def create_held(store, prompt, base, base_branch, worker, by=None, requested_by=None):

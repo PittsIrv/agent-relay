@@ -2,7 +2,7 @@
 
 ## Automated (every CI run)
 
-42 tests on temporary bare Git remotes, independent clones, real child processes,
+46 tests on temporary bare Git remotes, independent clones, real child processes,
 fake agents and an offline `gh` stand-in (`agent_relay/fake_gh.py`). They never
 spend provider quota or write to GitHub.
 
@@ -51,7 +51,7 @@ Regressions for the 2026-11-06 independent review:
 - Revoked write access stops being honoured once the permission cache expires.
 - Losing the local "posted" cache does not duplicate comments.
 - A hanging `gh` call times out without blocking task creation.
-- A failed `relay take` returns the task to the queue instead of stranding it.
+- A failed `relay take` restores the task's previous state instead of stranding it.
 - The usage-limit hook publishes new work after the previous task was completed.
 
 Regressions for the re-review of those fixes:
@@ -61,6 +61,13 @@ Regressions for the re-review of those fixes:
 - Retrying a task in review closes its superseded PR on GitHub.
 - A `gh` call slower than the lease never costs a running worker its lease.
 - An issue created just before a crash is adopted, not duplicated.
+
+Regressions for the third review:
+
+- A failed `relay take` of a task in review keeps its PR open and able to complete it.
+- A failed `relay take` of an expired running task returns it to the queue, claimable.
+- Recording the same PR twice is a no-op, never a close.
+- Closing a stale PR during a GitHub outage is retried on the next flush.
 
 `relay demo` runs the headline scenario end to end.
 

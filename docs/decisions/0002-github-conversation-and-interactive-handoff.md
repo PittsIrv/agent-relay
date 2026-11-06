@@ -146,3 +146,24 @@ revision yet", naming two blockers. Adjudication:
 - 3.4 Bounded replay → **agree**, docstrings now state the 5,000-id window.
 - 4.1 Two-machine GitHub trace → **open**, as before.
 - 5.4 Docstrings overstate delivery → **agree**, fixed.
+
+## Third independent review — 2026-11-06 (gpt-6-astra high)
+
+Full text: `docs/reviews/2026-11-06-v0.2-fixes-2.review.md`. Verdict: "do not ship",
+naming rollback and supersession invariants. Adjudication:
+
+- 1.1 Failed take from review restores a PR that can no longer complete the task → **agree**, fixed: `unhold` re-binds the restored PR to the current epoch. Test added.
+- 1.2 The rolled-back hold can still close the restored PR → **agree**, fixed: `unhold` removes the hold event's retirement; `take` posts only after success. Test added.
+- 1.3 Failed take of an expired running task leaves "running" with no lease → **agree**, fixed: it returns to `queued`. Test added.
+- 1.4 Closing a refused stale PR is not crash- or outage-safe → **agree**, fixed: the refusal is recorded in state (`past_prs` plus a silent `superseded` event) before closing, so a failed close is retried; the PR is closed before the explanatory comment. Test injects the outage.
+- 1.5 Attachment not idempotent → **agree**, fixed: attaching the same PR at the same epoch succeeds. Test added.
+- 1.6 Shutdown abandons a live GitHub job → **agree in part**: the worker now says so; recovery relies on marker and head-branch adoption, documented. A managed job queue (3.2) is future work.
+- 2.1 Shared local state across threads → **agree**, fixed: state writes are serialized per clone in-process, and a push that landed but failed locally is treated as landed (never applied twice). Narration was already under a file lock.
+- 2.2 PR adoption picks any PR with that head → **agree**, fixed: closed-unmerged PRs are not adopted.
+- 2.3 Issue adoption bounded by the labelled listing → **agree, accepted limit**, documented.
+- 2.4 Retirement depends on the acting worker returning → **agree, accepted limit** (same as narration ownership, already documented).
+- 3.1 Durable retirement queue → **agree in part**: retirements are now state-recorded events retried until done; a separate queue is not added.
+- 3.3 Non-draft fallback → **disagree**, as before.
+- 4.2 Slow-sync test only covers failing slow calls → **agree, open**: a successful slow `gh` stand-in is future test work.
+- 4.4 Real two-machine trace → **open**, as before.
+- 5.2–5.4 Documentation gaps → **agree**, fixed in README, architecture and validation.

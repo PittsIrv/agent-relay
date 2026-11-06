@@ -104,6 +104,8 @@ class Worker:
             finally:
                 if self._syncing:
                     self._syncing.join(timeout=120)
+                    if self._syncing.is_alive():
+                        self.emit("A GitHub update is still running; anything unfinished is posted on the next start.")
                 self.announce("offline")
 
     def announce(self, mode):

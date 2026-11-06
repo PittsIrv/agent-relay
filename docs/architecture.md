@@ -134,8 +134,15 @@ checkpoint is saved and `snapshot_changed_during_check` is true.
 - `.git/agent-relay/attempts/`: retained worktrees, private logs, prompts, recovery SHAs.
 
 Known bounds: comment sync, issue import and marker search read at most 2,000
-items per call; a task stuck in `held` because its holder crashed is freed with
-`relay cancel` then `relay retry`.
+items per call; past that, commands can be missed, issues are not imported and
+duplicate checks can miss. A task stuck in `held` because its holder crashed is
+freed with `relay cancel` then `relay retry`; this starts a new attempt, so any
+earlier PR is closed as superseded and its check result is dropped.
+
+Threads: a worker's heartbeat thread and its one GitHub thread share the clone's
+state store, which serializes their writes; narration is serialized by a file lock.
+On shutdown the worker waits up to two minutes for the GitHub thread; anything it
+leaves unfinished is detected by marker or head branch and finished on the next run.
 
 No automatic pruning yet. Repository administrators must allow direct writes to
 `relay/*` branches while keeping normal protection on the main branch.
