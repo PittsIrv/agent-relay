@@ -1,6 +1,15 @@
 # 0002: GitHub as the conversation, interactive handoff, small scheduler
 
-Date: 2026-11-06. Status: accepted (owner delegated all v0.2 decisions).
+Date: 2026-11-06. Status: accepted. Who decided: Claude, under the owner's
+explicit delegation ("you can decide and develop it"), except D12's use case, which
+the owner stated.
+
+## Intent
+
+Make Agent Relay publishable around its real use case: collaborators lend their
+idle agents to each other, with consent, and GitHub is where people and agents
+see and steer the work. A usage limit in your own Claude Code session should hand
+off without you.
 
 ## Context
 
@@ -30,6 +39,38 @@ The v0.1 alpha moves tasks between background workers through a hidden
 | D11 | Comments name people in bold, never with `@`. | Avoids notification spam from automated narration. | `@mentions`. |
 | D12 | Consent is per owner and per clone: `relay start` opts in; `--accept-from` limits whose requests the agent takes; `--max-tasks-per-day` caps it; `relay add --for LOGIN` or assigning the issue addresses one collaborator's agent. Defaults: any collaborator with write access, no cap. | The owner clarified on 2026-11-06 that the core case is asking a friend's agent with spare quota to work while their machine is on, with their consent. Assignment is how GitHub already says "this is for you". | A global pool with no addressing. |
 | D13 | Agent failures are classified from structured CLI output only. A top-level `error` field or HTTP 429 counts; the short error code (e.g. `authentication_failed (HTTP 401)`) is shared, message text is not. | Observed live: an expired Claude Code login emits `"error":"authentication_failed"` and `api_error_status: 401`. | Regex over the whole log. |
+
+## Intuitions and rejected alternatives
+
+The rejected alternative for each decision is in the table. Two broader ones:
+
+- A hosted coordinator (web app, database, webhooks) would cut polling latency but
+  add an account, hosting cost and a trust party. Git plus `gh` keeps the "no
+  server" promise; revisit only if polling becomes the measured bottleneck.
+- Letting agents read the whole issue thread as context would make the
+  conversation richer, but issue text on public repositories is attacker-controlled.
+  Only writer-authored `/relay note` text reaches prompts.
+
+## How to verify
+
+1. `relay demo` prints a PASS line and the issue thread: Alice's session hands off,
+   Bob's agent picks it up and finishes, draft PR, merged, done.
+2. `.venv/bin/python -m unittest discover -s tests -v`: 29 tests pass.
+3. In a real repository with a collaborator: `relay init` in both clones,
+   `relay hook install` in yours, `relay start --agent codex` in theirs, open an
+   issue labelled `relay` and assign it to them. Within a minute the issue gets a
+   "picked this up" comment, then a result comment and a draft PR.
+
+## Revisit when
+
+- A provider-observed usage limit is captured: confirm the hook payload and the
+  worker classifier against it.
+- Groups grow past about five workers per repository or polling cost is noticed:
+  reconsider webhooks or a hosted coordinator.
+- Codex gains an interactive usage-limit hook: add it alongside Claude Code's.
+
+Spend: about $0.00 in API keys. One Codex run and one failed Claude Code start on
+existing subscriptions.
 
 ## Consequences
 
