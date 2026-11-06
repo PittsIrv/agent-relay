@@ -1,0 +1,245 @@
+import concurrent.futures
+import io
+import json
+import tempfile
+import time
+import unittest
+from pathlib import Path
+
+from agent_relay import config, interactive, tasks
+from agent_relay.conversation import Conversation
+from agent_relay.demo import mock, setup
+from agent_relay.gitstore import Store, output, private_dir
+
+quiet = lambda _: None
+
+
+class GitHubConversationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.a, self.b, self.base = setup(self.root, github=True)
+        self.store = Store(self.a)
+
+    def db(self):
+        return json.loads((self.root / "github.json").read_text())
+
+    def edit_db(self, change):
+        db = self.db()
+        change(db)
+        (self.root / "github.json").write_text(json.dumps(db))
+
+    def talk(self, repo):
+        return Conversation(repo, config.load(repo), Store(repo), quiet)
+
+    def add(self, prompt="Implement answer() returning 42", **kwargs):
+        cfg = config.load(self.a)
+        task_id = tasks.add(self.store, prompt, self.base, base_branch="main", created_by=cfg["worker"],
+                            by="alice", **kwargs)
+        return self.talk(self.a).flush(self.store.read()[1]["tasks"][task_id])
+
+    def comment(self, number, body, login):
+        def change(db):
+            db["comments"].append({"id": len(db["comments"]) + 1, "body": body, "user": {"login": login},
+                                   "created_at": "2999-01-01T00:00:00Z", "updated_at": "2999-01-01T00:00:00Z",
+                                   "issue_url": f"https://api.github.com/repos/demo/shared/issues/{number}"})
+        self.edit_db(change)
+
+    def test_handoff_is_narrated_once_on_issue_and_pr(self):
+        task = self.add()
+        self.assertEqual(task["issue"], 1)
+        mock(self.a, "limit", emit=quiet).run(once=True)
+        mock(self.b, "finish", emit=quiet).run(once=True)
+        task = self.store.read()[1]["tasks"][task["id"]]
+        self.assertEqual(task["status"], "review")
+        pull = self.db()["pulls"][str(task["pr"])]
+        self.assertTrue(pull["draft"])
+        self.assertEqual((pull["head"], pull["base"]), (task["checkpoint"]["branch"], "main"))
+        self.assertIn("Closes #1", pull["body"])
+        bodies = [c["body"] for c in self.db()["comments"]]
+        kinds = ["picked this up", "usage limit", "picked this up", "finished attempt 2"]
+        self.assertEqual(len(bodies), len(kinds))
+        for body, expected in zip(bodies, kinds):
+            self.assertIn(expected, body)
+        self.assertNotIn("@", "".join(bodies).replace("<!--", ""))
+        for repo in (self.a, self.b):
+            self.talk(repo).flush_all(self.store.read()[1])
+        self.assertEqual(len(self.db()["comments"]), len(kinds), "re-flushing must not duplicate comments")
+
+    def test_issue_import_requires_write_access_and_is_idempotent(self):
+        def file(db):
+            for number, login in ((10, "mallory"), (11, "alice")):
+                db["issues"][str(number)] = {"number": number, "title": f"Issue by {login}", "body": "Do it",
+                                             "state": "open", "labels": [{"name": "relay"}],
+                                             "user": {"login": login}}
+            db["permissions"]["mallory"] = "read"
+        self.edit_db(file)
+        first = self.talk(self.b).sync("main")
+        second = self.talk(self.a).sync("main")
+        self.assertEqual(first["imported"], [11])
+        self.assertEqual(second["imported"], [])
+        state = self.store.read()[1]
+        self.assertEqual([t["issue"] for t in state["tasks"].values()], [11])
+        task = next(iter(state["tasks"].values()))
+        self.assertEqual(task["prompt"], "Issue by alice\n\nDo it")
+        self.assertIn("queued this issue", self.db()["comments"][-1]["body"])
+
+    def test_comment_commands_from_writers_apply_exactly_once(self):
+        task = self.add()
+        mock(self.a, "error", emit=quiet).run(once=True)
+        self.assertEqual(self.store.read()[1]["tasks"][task["id"]]["status"], "blocked")
+        self.comment(1, "/relay retry the import path is wrong", "mallory")
+        self.comment(1, "/relay retry use answer.py at the repo root", "bob")
+        self.talk(self.a).sync("main")
+        self.talk(self.b).sync("main")
+        task = self.store.read()[1]["tasks"][task["id"]]
+        self.assertEqual(task["status"], "queued")
+        self.assertEqual([n["text"] for n in task["notes"]], ["use answer.py at the repo root"])
+        self.assertEqual(len(self.db()["reactions"]), 1)
+        self.assertIn("use answer.py at the repo root", interactive_prompt(task))
+
+    def test_cancel_comment_stops_a_running_agent(self):
+        task = self.add()
+        worker = mock(self.a, "wait", emit=quiet)
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            future = pool.submit(worker.run, True)
+            deadline = time.monotonic() + 10
+            while self.store.read()[1]["tasks"][task["id"]]["status"] != "running":
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.05)
+            self.comment(1, "/relay cancel", "alice")
+            self.talk(self.b).sync("main")
+            worker.heartbeat = 0.1
+            future.result(timeout=20)
+        self.assertEqual(self.store.read()[1]["tasks"][task["id"]]["status"], "cancelled")
+        self.assertTrue(list(private_dir(self.a).glob("attempts/*/recovery.json")))
+
+    def test_merged_pr_marks_done_and_unblocks_dependents(self):
+        first = self.add()
+        second = self.add("Use answer() in main.py", after=[first["id"]])
+        self.assertIsNone(tasks.claim(Store(self.b), "probe", task_id=second["id"]))
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        task = self.store.read()[1]["tasks"][first["id"]]
+        self.assertEqual(task["status"], "review")
+        self.edit_db(lambda db: db["pulls"][str(task["pr"])].update(merged=True))
+        self.assertEqual(self.talk(self.a).sync("main")["done"], [first["id"]])
+        self.assertEqual(tasks.claim(Store(self.b), "probe")["id"], second["id"])
+
+    def test_github_outage_never_blocks_a_handoff(self):
+        cfg = config.load(self.a)
+        config.update(self.a, gh=["false"])
+        task = self.add()
+        self.assertIsNone(task["issue"])
+        mock(self.a, "limit", emit=quiet).run(once=True)
+        self.assertEqual(self.store.read()[1]["tasks"][task["id"]]["status"], "queued")
+        config.update(self.a, gh=cfg["gh"])
+        self.talk(self.a).flush_all(self.store.read()[1])
+        task = self.store.read()[1]["tasks"][task["id"]]
+        self.assertEqual(task["issue"], 1)
+        self.assertEqual(len(self.db()["comments"]), 2, "deferred claim and handoff comments are posted later")
+
+
+class InteractiveHandoffTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.a, self.b, self.base = setup(self.temp.name)
+        self.store = Store(self.a)
+
+    def hook(self, error="rate_limit"):
+        payload = {"hook_event_name": "StopFailure", "error": error, "cwd": str(self.a)}
+        return interactive.run_hook(stdin=io.StringIO(json.dumps(payload)), emit=quiet)
+
+    def tasks(self):
+        return self.store.read()[1]["tasks"]
+
+    def test_rate_limit_hook_publishes_uncommitted_work_without_touching_checkout(self):
+        (self.a / "answer.py").write_text("def answer():\n    return None\n")
+        (self.a / "README.md").write_text("edited\n")
+        before = (output(self.a, "status", "--porcelain"), output(self.a, "rev-parse", "HEAD"))
+        task = self.hook()
+        self.assertEqual(task["status"], "queued")
+        self.assertEqual((output(self.a, "status", "--porcelain"), output(self.a, "rev-parse", "HEAD")), before)
+        self.assertEqual(sorted(task["checkpoint"]["summary"]["files"]), ["README.md", "answer.py"])
+        self.assertIn("answer.py", task["prompt"])
+        mock(self.b, "finish", emit=quiet).run(once=True)
+        final = self.tasks()[task["id"]]
+        self.assertEqual((final["status"], final["verification"]["result"]), ("review", "passed"))
+
+    def test_other_errors_and_clean_trees_do_nothing(self):
+        (self.a / "answer.py").write_text("x = 1\n")
+        self.assertIsNone(self.hook("overloaded"))
+        (self.a / "answer.py").unlink()
+        self.assertIsNone(self.hook())
+        self.assertEqual(self.tasks(), {})
+
+    def test_repeated_hook_reuses_the_same_task(self):
+        (self.a / "answer.py").write_text("def answer():\n    return None\n")
+        first = self.hook()
+        again = self.hook()
+        self.assertEqual(again["id"], first["id"])
+        (self.a / "notes.txt").write_text("more\n")
+        updated = self.hook()
+        self.assertEqual(updated["id"], first["id"])
+        self.assertEqual(len(self.tasks()), 1)
+        self.assertIn("notes.txt", updated["checkpoint"]["summary"]["files"])
+
+    def test_sensitive_files_block_the_hook(self):
+        (self.a / ".env").write_text("TOKEN=secret\n")
+        self.assertIsNone(self.hook())
+        self.assertEqual(self.tasks(), {})
+        self.assertIn("sensitive filename", (private_dir(self.a) / "hook.log").read_text())
+
+    def test_take_holds_task_and_handoff_returns_it(self):
+        (self.a / "answer.py").write_text("def answer():\n    return None\n")
+        task = self.hook()
+        cfg_b = config.load(self.b)
+        held = interactive.take(self.b, cfg_b, Store(self.b), task["id"], emit=quiet)
+        self.assertEqual(held["status"], "held")
+        self.assertEqual(output(self.b, "symbolic-ref", "--short", "HEAD"), f"relay/{task['id']}")
+        self.assertIn("return None", (self.b / "answer.py").read_text())
+        self.assertIsNone(tasks.claim(self.store, "pool", now=time.time() + 30 * 86400))
+        (self.b / "answer.py").write_text("def answer():\n    return 41  # nearly\n")
+        back = interactive.handoff(self.b, config.load(self.b), Store(self.b), message="off by one left", emit=quiet)
+        self.assertEqual((back["id"], back["status"], back["epoch"]), (task["id"], "queued", 2))
+        self.assertIn("return 41", output(self.b, "show", f"{back['checkpoint']['sha']}:answer.py"))
+        self.assertEqual(back["notes"][-1]["text"], "off by one left")
+        self.assertEqual(config.load(self.b)["held"], {})
+
+    def test_take_refuses_dirty_checkout(self):
+        (self.a / "answer.py").write_text("def answer():\n    return None\n")
+        task = self.hook()
+        (self.b / "scratch.txt").write_text("mine\n")
+        with self.assertRaisesRegex(Exception, "Commit or stash"):
+            interactive.take(self.b, config.load(self.b), Store(self.b), task["id"], emit=quiet)
+
+    def test_hook_install_merges_and_uninstalls(self):
+        settings = self.a / ".claude" / "settings.local.json"
+        settings.parent.mkdir()
+        settings.write_text(json.dumps({"permissions": {"allow": ["Bash(ls)"]}}))
+        interactive.install_hook(self.a)
+        interactive.install_hook(self.a)
+        data = json.loads(settings.read_text())
+        self.assertEqual(data["permissions"], {"allow": ["Bash(ls)"]})
+        self.assertEqual(len(data["hooks"]["StopFailure"]), 1)
+        self.assertEqual(data["hooks"]["StopFailure"][0]["matcher"], "rate_limit")
+        self.assertEqual(output(self.a, "status", "--porcelain"), "")
+        interactive.install_hook(self.a, uninstall=True)
+        self.assertNotIn("StopFailure", json.loads(settings.read_text())["hooks"])
+
+    def test_presence_is_reported(self):
+        mock(self.a, "limit", emit=quiet).run(once=True)
+        workers = self.store.read()[1]["workers"]
+        me = config.load(self.a)["worker"]
+        self.assertEqual(workers[me]["mode"], "offline")
+        self.assertIn("simulated agent", workers[me]["label"])
+
+
+def interactive_prompt(task):
+    from agent_relay.adapters import prompt
+    return prompt(task)
+
+
+if __name__ == "__main__":
+    unittest.main()

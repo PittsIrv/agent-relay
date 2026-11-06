@@ -5,12 +5,13 @@ import json
 from .gitstore import RelayError
 
 
-def command(agent):
+def command(agent, model=None):
+    model_args = ["--model", model] if model else []
     if agent == "codex":
-        return ["codex", "exec", "--sandbox", "workspace-write", "--json", "-"]
+        return ["codex", "exec", "--sandbox", "workspace-write", "--json", *model_args, "-"]
     if agent == "claude":
         return ["claude", "--print", "--output-format", "stream-json", "--verbose",
-                "--permission-mode", "acceptEdits"]
+                "--permission-mode", "acceptEdits", *model_args]
     raise RelayError(f"Unknown agent: {agent}")
 
 
@@ -34,11 +35,39 @@ def failure_kind(log, returncode):
     return None
 
 
+def history(task):
+    """Facts the supervisor recorded; the successor still verifies them against the code."""
+    lines = []
+    for ev in task.get("events", []):
+        if ev["kind"] in ("claimed", "held"):
+            lines.append(f"- attempt {ev.get('epoch')}: {ev.get('by') or ev.get('worker')} started")
+        elif ev["kind"] in ("handoff", "queued", "blocked"):
+            lines.append(f"- stopped ({ev['kind']}): {ev.get('reason') or 'no reason recorded'}")
+    cp = task.get("checkpoint")
+    if cp:
+        summary = cp.get("summary") or {}
+        lines.append(f"- latest checkpoint {cp['sha'][:10]}: {summary.get('stat') or 'changes unknown'}")
+        if summary.get("files"):
+            lines.append("  files: " + ", ".join(summary["files"]))
+    return "\n".join(lines[-12:]) or "- first attempt"
+
+
+def notes(task):
+    entries = task.get("notes") or []
+    return "\n".join(f"- {n.get('by') or 'collaborator'}: {n['text']}" for n in entries[-8:]) or "- none"
+
+
 def prompt(task):
     return f"""You are continuing an explicitly enrolled shared repository task.
 
 TASK:
 {task['prompt']}
+
+HISTORY (recorded by the relay supervisor, not by a model):
+{history(task)}
+
+NOTES FROM COLLABORATORS WITH WRITE ACCESS:
+{notes(task)}
 
 This worktree starts from the latest remote checkpoint, which may be unfinished
 or broken. Inspect the code and any .relay-handoff.md before editing. Verify work

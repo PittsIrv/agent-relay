@@ -13,6 +13,8 @@ if mode == "limit":
 if mode == "finish":
     assert "return None" in Path("answer.py").read_text(), "successor did not receive partial work"
     Path("answer.py").write_text("def answer():\n    return 42\n")
+elif mode == "finish-fresh":
+    Path("answer.py").write_text("def answer():\n    return 42\n")
 elif mode == "secret":
     Path(".env").write_text("DEMO_SECRET=do-not-publish\n")
 elif mode == "wait":

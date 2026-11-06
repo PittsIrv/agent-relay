@@ -7,8 +7,9 @@ import time
 from pathlib import Path
 
 from . import adapters, config, tasks
-from .checkpoint import publish, snapshot
-from .gitstore import RelayError, Store, git, private_dir
+from .checkpoint import publish, snapshot, summarize
+from .conversation import Conversation
+from .gitstore import RelayError, Store, git, output, private_dir
 
 
 def signal_group(proc, sig):
@@ -34,13 +35,18 @@ def stop_group(proc):
 
 
 class Worker:
-    def __init__(self, repo, agent="codex", *, argv=None, heartbeat=60, interval=120,
-                 ttl=300, poll=2, cooldown=1800, max_runtime=3600, emit=print):
+    def __init__(self, repo, agent="codex", *, argv=None, model=None, heartbeat=60, interval=120,
+                 ttl=300, poll=2, cooldown=1800, max_runtime=3600, presence=300, sync=60, emit=print):
         self.repo = Path(repo)
         self.cfg = config.load(repo)
         self.store = Store(repo, self.cfg["remote"])
-        self.argv = argv or adapters.command(agent)
+        self.agent = agent
+        self.argv = argv or adapters.command(agent, model)
         self.worker = self.cfg["worker"]
+        self.label = f"{self.cfg.get('owner') or self.worker}'s {self.agent}"
+        self.talk = Conversation(self.repo, {**self.cfg, "label": self.label}, self.store, emit)
+        self.presence_every = presence
+        self.sync_every = sync
         self.folder = private_dir(repo)
         self.heartbeat = heartbeat
         self.interval = interval
@@ -61,23 +67,53 @@ class Worker:
                 raise RelayError("A worker is already running in this clone") from exc
             if opt_in:
                 config.update(self.repo, mode="pooled")
-            while not self.stopping:
-                cfg = config.load(self.repo)
-                cooling = cfg.get("cooldown_until", 0) > time.time()
-                if cfg["mode"] != "pooled" or cooling:
+            last_seen = last_sync = 0
+            try:
+                while not self.stopping:
+                    cfg = config.load(self.repo)
+                    if time.monotonic() - last_seen >= self.presence_every:
+                        self.announce(cfg["mode"])
+                        last_seen = time.monotonic()
+                    if self.talk.gh and time.monotonic() - last_sync >= self.sync_every:
+                        self.sync()
+                        last_sync = time.monotonic()
+                    cooling = cfg.get("cooldown_until", 0) > time.time()
+                    if cfg["mode"] != "pooled" or cooling:
+                        if once:
+                            self.emit("Worker is paused or cooling down; no task claimed.")
+                            return
+                        time.sleep(self.poll)
+                        continue
+                    task = tasks.claim(self.store, self.worker, self.ttl, by=self.label)
+                    if task:
+                        self.talk.flush(task)
+                        self.attempt(task)
+                        last_seen = 0
                     if once:
-                        self.emit("Worker is paused or cooling down; no task claimed.")
+                        if not task:
+                            self.emit("No queued task.")
                         return
                     time.sleep(self.poll)
-                    continue
-                task = tasks.claim(self.store, self.worker, self.ttl)
-                if task:
-                    self.attempt(task)
-                if once:
-                    if not task:
-                        self.emit("No queued task.")
-                    return
-                time.sleep(self.poll)
+            finally:
+                self.announce("offline")
+
+    def announce(self, mode):
+        try:
+            tasks.presence(self.store, self.worker, {"label": self.label, "owner": self.cfg.get("owner"),
+                                                     "agent": self.agent, "mode": mode})
+        except RelayError as exc:
+            self.emit(f"Presence update skipped: {exc}")
+
+    def sync(self):
+        try:
+            report = self.talk.sync(self.cfg.get("default_branch") or "main")
+        except (RelayError, OSError, ValueError, KeyError) as exc:
+            self.emit(f"GitHub sync deferred: {exc}")
+            return
+        for number in report.get("imported", []):
+            self.emit(f"Imported issue #{number} as a task")
+        for item in report.get("commands", []):
+            self.emit(f"{item['by']}: /relay {item['verb']} on {item['task']} -> {item['result']}")
 
     def attempt(self, task):
         task_id, epoch = task["id"], task["epoch"]
@@ -87,11 +123,15 @@ class Worker:
         (attempt_dir / "task.json").write_text(json.dumps(task, indent=2))
         parent = (task.get("checkpoint") or {}).get("sha") or task["base"]
         proc = None
+        talk = self.talk
         log_path = attempt_dir / "agent.log"
         self.emit(f"Claimed {task_id} (attempt {epoch}); local files: {attempt_dir}")
 
         def renew(**kwargs):
-            return tasks.update(self.store, task_id, self.worker, epoch, ttl=self.ttl, **kwargs)
+            updated = tasks.update(self.store, task_id, self.worker, epoch, ttl=self.ttl, by=self.label, **kwargs)
+            if kwargs.get("status"):
+                talk.flush(updated)
+            return updated
 
         def checkpoint():
             nonlocal parent
@@ -103,6 +143,7 @@ class Worker:
                 # Persist recovery coordinates before any network publication.
                 (attempt_dir / "recovery.json").write_text(json.dumps({"sha": sha, "task": task_id, "epoch": epoch}))
                 cp = publish(self.repo, self.cfg["remote"], sha, task_id, epoch)
+                cp["summary"] = summarize(worktree, task["base"], sha)
                 renew(checkpoint=cp)  # CAS fences stale publication to canonical state.
                 parent = sha
                 self.emit(f"Checkpoint {sha[:10]} published for {task_id}")
@@ -111,6 +152,12 @@ class Worker:
                 signal_group(proc, signal.SIGCONT)
 
         try:
+            if not task.get("checkpoint") and task.get("after") and task.get("base_branch"):
+                # Dependencies were merged after this task was queued: start from the current base.
+                refs = output(self.repo, "ls-remote", "--refs", self.cfg["remote"], f"refs/heads/{task['base_branch']}")
+                if refs:
+                    parent = refs.split()[0]
+                    task = renew(base=parent)
             git(self.repo, "fetch", "--quiet", "--no-tags", self.cfg["remote"], parent)
             git(self.repo, "worktree", "add", "--quiet", "--detach", str(worktree), parent)
             prompt_path = attempt_dir / "prompt.txt"
@@ -140,7 +187,7 @@ class Worker:
                 stop_group(proc)
             checkpoint()
             if interrupted:
-                renew(status="queued", reason="Owner paused or stopped worker")
+                renew(status="queued", reason="the owner paused this worker")
                 return
             # Bound memory; raw provider logs remain local and are never uploaded.
             with log_path.open("rb") as log:
@@ -148,7 +195,7 @@ class Worker:
                 kind = adapters.failure_kind(log.read().decode(errors="replace"), returncode)
             if kind == "quota":
                 config.update(self.repo, cooldown_until=time.time() + self.cooldown)
-                renew(status="queued", reason="Provider reported a usage/rate limit")
+                renew(status="queued", kind="handoff", reason="usage limit reached")
                 self.emit(f"Handed off {task_id}; this worker will wait {self.cooldown}s before trying again.")
             elif kind == "error":
                 renew(status="blocked", reason="Agent failed; inspect local agent.log and retry")
@@ -161,6 +208,15 @@ class Worker:
                 verification["snapshot_changed_during_check"] = parent != checked_sha
                 renew(status="review", reason="Agent finished; human review required", verification=verification)
                 self.emit(f"{task_id} ready for review; check: {verification['result']}. Nothing merged.")
+        except tasks.LeaseLost:
+            stop_group(proc)
+            if worktree.exists():
+                try:
+                    sha = snapshot(worktree, parent, task_id, epoch)
+                    (attempt_dir / "recovery.json").write_text(json.dumps({"sha": sha, "task": task_id, "epoch": epoch}))
+                except Exception:
+                    pass
+            self.emit(f"Lost the lease on {task_id} (cancelled or reassigned); stopped. Local files: {attempt_dir}")
         except (Exception, KeyboardInterrupt) as exc:
             stop_group(proc)
             # Preserve work locally; never advertise an unpushed snapshot as durable.

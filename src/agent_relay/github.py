@@ -1,0 +1,113 @@
+"""GitHub REST calls through the owner's own `gh` login. Best effort, never authoritative."""
+
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+from urllib.parse import urlencode
+
+from .gitstore import RelayError, output
+
+SLUG = re.compile(r"github\.com[:/]+([\w.-]+)/([\w.-]+?)(?:\.git)?/?$")
+WRITERS = ("admin", "maintain", "write")
+
+
+def gh_argv():
+    custom = os.environ.get("RELAY_GH")
+    if custom:
+        return shlex.split(custom)
+    found = shutil.which("gh")
+    return [found] if found else None
+
+
+def detect(repo, remote):
+    """Return 'owner/name' when the remote is on github.com and `gh` is signed in."""
+    match = SLUG.search(output(repo, "remote", "get-url", remote))
+    argv = gh_argv()
+    if not match or not argv:
+        return None
+    probe = subprocess.run([*argv, "auth", "status"], capture_output=True, timeout=30)
+    return f"{match[1]}/{match[2]}" if probe.returncode == 0 else None
+
+
+class GitHub:
+    def __init__(self, slug, argv=None):
+        self.slug = slug
+        self.argv = argv or gh_argv()
+        if not self.argv:
+            raise RelayError("GitHub mirroring needs the `gh` CLI; install it and run `gh auth login`")
+        self._permissions = {}
+
+    def api(self, method, path, body=None, **params):
+        if params:
+            path = f"{path}?{urlencode(params)}"
+        argv = [*self.argv, "api", "--method", method, path]
+        data = None
+        if body is not None:
+            argv += ["--input", "-"]
+            data = json.dumps(body).encode()
+        result = subprocess.run(argv, input=data, capture_output=True, timeout=60)
+        if result.returncode:
+            message = result.stderr.decode(errors="replace").strip() or result.stdout.decode(errors="replace").strip()
+            raise RelayError(f"GitHub {method} {path.split('?')[0]} failed: {message[:300]}")
+        text = result.stdout.decode().strip()
+        return json.loads(text) if text else None
+
+    def repo(self, suffix=""):
+        return f"repos/{self.slug}{suffix}"
+
+    def login(self):
+        return self.api("GET", "user")["login"]
+
+    def ensure_label(self, name="relay"):
+        try:
+            self.api("POST", self.repo("/labels"), {"name": name, "color": "5319e7",
+                                                    "description": "Work for the Agent Relay pool"})
+        except RelayError as exc:
+            if "already_exists" not in str(exc) and "422" not in str(exc):
+                raise
+
+    def create_issue(self, title, body, labels=("relay",)):
+        return self.api("POST", self.repo("/issues"), {"title": title, "body": body, "labels": list(labels)})["number"]
+
+    def comment(self, number, body):
+        return self.api("POST", self.repo(f"/issues/{number}/comments"), {"body": body})
+
+    def react(self, comment_id, content="+1"):
+        return self.api("POST", self.repo(f"/issues/comments/{comment_id}/reactions"), {"content": content})
+
+    def open_pr(self, head, base, title, body, draft=True):
+        request = {"head": head, "base": base, "title": title, "body": body, "draft": draft}
+        try:
+            pr = self.api("POST", self.repo("/pulls"), request)
+        except RelayError as exc:
+            # Some plans reject drafts on private repositories; an ordinary PR still needs review.
+            if not draft or "draft" not in str(exc).lower():
+                raise
+            pr = self.api("POST", self.repo("/pulls"), {**request, "draft": False})
+        return pr["number"], pr.get("html_url")
+
+    def pull(self, number):
+        return self.api("GET", self.repo(f"/pulls/{number}"))
+
+    def labeled_issues(self, label="relay"):
+        issues = self.api("GET", self.repo("/issues"), labels=label, state="open", per_page=100)
+        return [issue for issue in issues if "pull_request" not in issue]
+
+    def comments_since(self, since):
+        return self.api("GET", self.repo("/issues/comments"), since=since, sort="created",
+                        direction="asc", per_page=100)
+
+    def can_write(self, login):
+        if login not in self._permissions:
+            try:
+                value = self.api("GET", self.repo(f"/collaborators/{login}/permission"))["permission"]
+            except RelayError:
+                value = "none"
+            self._permissions[login] = value
+        return self._permissions[login] in WRITERS
+
+    def url(self, kind, ref):
+        return f"https://github.com/{self.slug}/{kind}/{ref}"
