@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 from . import tasks
 from .gitstore import RelayError, output, private_dir
-from .github import GitHub
+from .github import GitHub, Truncated
 
 MARKER = "<!-- relay:{task}:{n} -->"
 OWNED = "<!-- relay-task:{task} -->"
@@ -182,10 +182,24 @@ class Conversation:
                     task = self._open_pr(task, state)
             pending = [ev for ev in task["events"] if ev.get("worker") == self.worker and ev.get("n")
                        and ev["kind"] not in SILENT and f"{task['id']}:{ev['n']}" not in posted]
-            # Close superseded PRs first: that is safety work, and must not wait on comment checks.
-            for ev in pending:
-                if ev.get("retired_pr"):
-                    self._retire(ev["retired_pr"], task)
+            # Close superseded PRs first, each on its own: that is safety work, and must not wait
+            # on comment checks or on another PR's failure. Notes follow.
+            retired = [ev["retired_pr"] for ev in pending if ev.get("retired_pr")]
+            failures = []
+            for number in retired:
+                try:
+                    self._close_superseded(number, task)
+                except RelayError as exc:
+                    failures.append(exc)
+            for number in retired:
+                try:
+                    self._note_superseded(number, task)
+                except Truncated:
+                    pass  # A thread too long to check for the note: skip the courtesy note.
+                except RelayError as exc:
+                    failures.append(exc)
+            if failures:
+                raise failures[0]  # Defer this task's narration; closes already done stay done.
             if pending:
                 # A crash between posting and recording must not post twice: check the thread itself.
                 remote = "\n".join(c.get("body") or "" for c in self.gh.issue_comments(task["issue"]))
@@ -219,15 +233,24 @@ class Conversation:
         return self.store.read()[1]["tasks"][task["id"]]
 
     def _retire(self, number, task):
+        self._close_superseded(number, task)
+        self._note_superseded(number, task)
+
+    def _close_superseded(self, number, task):
         """Close a superseded attempt's PR so its `Closes #N` cannot close the live issue."""
         current = self.store.read()[1]["tasks"].get(task["id"]) or {}
         if current.get("pr") == number:
-            return  # Restored as the current PR (for example by a failed take): never close it.
+            return  # Still the current PR (for example during a reversible take): never close it.
         pull = self.gh.pull(number) or {}
-        if pull.get("merged"):
+        if pull.get("state") == "open" and not pull.get("merged"):
+            self.gh.close_pr(number)
+
+    def _note_superseded(self, number, task):
+        """Explain the close on the PR, once, retried on its own marker."""
+        current = self.store.read()[1]["tasks"].get(task["id"]) or {}
+        pull = self.gh.pull(number) or {}
+        if current.get("pr") == number or pull.get("merged") or pull.get("state") == "open":
             return
-        if pull.get("state") == "open":
-            self.gh.close_pr(number)  # Close first; the note below is retried on its own marker.
         note = RETIRED.format(task=task["id"], pr=number)
         if not any(note in (c.get("body") or "") for c in self.gh.issue_comments(number)):
             self.gh.comment(number, f"Superseded by a newer attempt on task `{task['id']}`; closed. "

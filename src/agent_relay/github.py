@@ -11,6 +11,10 @@ from urllib.parse import urlencode
 
 from .gitstore import RelayError, output
 
+
+class Truncated(RelayError):
+    """A listing hit the page cap, so a duplicate check cannot be trusted."""
+
 SLUG = re.compile(r"github\.com[:/]+([\w.-]+)/([\w.-]+?)(?:\.git)?/?$")
 WRITERS = ("admin", "maintain", "write")
 PERMISSION_TTL = 600
@@ -75,7 +79,7 @@ class GitHub:
             if len(items) < 100:
                 return
         if complete:
-            raise RelayError(f"More than {MAX_PAGES * 100} items at {path}; not risking a duplicate")
+            raise Truncated(f"More than {MAX_PAGES * 100} items at {path}; not risking a duplicate")
 
     def repo(self, suffix=""):
         return f"repos/{self.slug}{suffix}"

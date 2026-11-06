@@ -148,8 +148,12 @@ checkpoint is saved and `snapshot_changed_during_check` is true.
 Known bounds: comment sync and issue import read at most 2,000 items per call;
 past that, commands can be missed and issues are not imported. Duplicate checks
 (comment markers, issue adoption) refuse to act on a truncated list and defer
-instead; closing superseded PRs runs before those checks and is never blocked by them.
-`take`, `handoff` and the hook run one at a time per clone. A task stuck in `held` because its holder crashed is
+instead. Closing superseded PRs runs first, one PR at a time, and is not blocked by
+those checks or by another PR's failure; the explanatory note on a closed PR is
+skipped if its thread is too long to check. `take`, `handoff` and the hook run one
+at a time per clone and reread the clone's hold records once they have the lock.
+This orders Relay commands only; it does not freeze the working tree against an
+editor or plain Git commands. A task stuck in `held` because its holder crashed is
 freed with `relay cancel` then `relay retry`; this starts a new attempt, so any
 earlier PR is closed as superseded and its check result is dropped.
 

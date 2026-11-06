@@ -2,7 +2,7 @@
 
 ## Automated (every CI run)
 
-60 tests on temporary bare Git remotes, independent clones, real child processes,
+63 tests on temporary bare Git remotes, independent clones, real child processes,
 fake agents and an offline `gh` stand-in (`agent_relay/fake_gh.py`). They never
 spend provider quota or write to GitHub.
 
@@ -97,6 +97,12 @@ Regressions for the seventh review:
 - After a rolled-back take, epochs keep increasing; the old hold's token matches
   nothing.
 - A thread past the page cap does not block closing a superseded PR.
+
+Regressions for the eighth review:
+
+- Two pending retirements both close even when the first PR's thread is capped.
+- A hand-off using configuration loaded before a take still returns the held task.
+- The offline stand-in keeps the label filter when listing issues in all states.
 
 `relay demo` runs the headline scenario end to end.
 

@@ -254,3 +254,26 @@ Gemini
 - 1.2 Handing back after the PR merged mid-hold creates a new task → **agree, by design**: the work is new; the hand-off now says so.
 - 3.1 `relay unhold --force` → **disagree for now**: cancel then retry is explicit and documented.
 - 3.2 Double fetch → **disagree**, as before.
+
+## Eighth independent review — 2026-11-06 (gpt-6-astra medium, gemini-3.1-pro-preview)
+
+Full text: `docs/reviews/2026-11-06-v0.2-fixes-7.review.md` and `.gemini.review.md`.
+GPT verdict: "do not ship"; Gemini verdict: "ship". Adjudication:
+
+GPT
+- 1.1 The interactive lock used configuration loaded before it → **agree**, fixed: `take` and `handoff` reread the clone's hold records inside the lock. Test added.
+- 1.2 A capped retired-PR thread blocks later retirements → **agree**, fixed: closes run per PR before any note; a note whose thread is too long to check is skipped (`Truncated`), other failures defer narration only after every close was attempted. Test added.
+- 1.3 Operator precedence in the stand-in's `state=all` filter → **agree**, fixed. Test added.
+- 2.2 Retirement depends on the responsible worker → **accepted limit**, as before.
+- 2.3 The lock orders Relay commands only → **agree**, documented narrowly.
+- 3.3 API-contract tests for the stand-in → **agree in part**: a test for the state and label combination added.
+- 4.3 Delayed-GitHub two-worker trace → **open**.
+- 4.4 Test result for the exact final revision → **agree**: reported in the ship request.
+
+Gemini
+- 1.1 A persistent `pull` failure blocks narration for that task → **agree, accepted**: GitHub PRs cannot be deleted, so this is a transient outage, retried.
+- 2.1 Adopting a closed orphan issue does not reopen it → **agree, accepted**: narration on a closed issue is still visible; reopening someone's close is not Relay's call.
+- 2.2 POSIX only → **already documented** in the README limits.
+- 3.1 Pop vs explicit `None` → **disagree**: absent keys are the existing state convention.
+- 4.1 Branch name after a mid-hold merge → **agree, minor**: the hand-off message names the new task.
+- 4.2 Note on the PR, not the issue → **by design**: it tells the PR's readers why it closed.

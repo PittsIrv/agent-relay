@@ -448,6 +448,39 @@ class GitHubConversationTests(unittest.TestCase):
             self.talk(self.a).flush(self.store.read()[1]["tasks"][task["id"]])
         self.assertEqual(self.db()["pulls"][str(old)]["state"], "closed")
 
+    def test_two_retirements_close_even_when_the_first_pr_thread_is_capped(self):
+        from unittest.mock import patch
+        task = self.add()
+        alice = config.load(self.a)["worker"]
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        first = self.store.read()[1]["tasks"][task["id"]]["pr"]
+        tasks.retry(self.store, task["id"], worker=alice, by="alice")
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        second = self.store.read()[1]["tasks"][task["id"]]["pr"]
+        tasks.retry(self.store, task["id"], worker=alice, by="alice")
+        for i in range(130):
+            self.comment(first, f"review chatter {i}", "bob")
+        with patch("agent_relay.github.MAX_PAGES", 1):
+            self.talk(self.a).flush(self.store.read()[1]["tasks"][task["id"]])
+        self.assertEqual([self.db()["pulls"][str(n)]["state"] for n in (first, second)], ["closed", "closed"])
+
+    def test_handoff_with_config_loaded_before_a_take_keeps_the_hold(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        early = config.load(self.a)  # Loaded before the take finished, e.g. by a waiting command.
+        interactive.take(self.a, config.load(self.a), Store(self.a), task["id"], emit=quiet)
+        (self.a / "answer.py").write_text("def answer():\n    return 42  # by hand\n")
+        back = interactive.handoff(self.a, early, Store(self.a), emit=quiet)
+        self.assertEqual(back["id"], task["id"], "the held task is handed back, not duplicated")
+        self.assertEqual(len(self.store.read()[1]["tasks"]), 1)
+        self.assertEqual(config.load(self.a)["held"], {})
+
+    def test_issue_listing_stand_in_keeps_the_label_filter_for_all_states(self):
+        self.add()
+        talk = self.talk(self.a)
+        talk.gh.create_issue("Unrelated", "not relay work", labels=())
+        self.assertEqual(len(talk.gh.labeled_issues(state="all")), 1)
+
     def test_late_attach_from_the_old_attempt_never_closes_a_restored_pr(self):
         task = self.add()
         mock(self.b, "finish-fresh", emit=quiet).run(once=True)

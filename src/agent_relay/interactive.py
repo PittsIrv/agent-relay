@@ -76,10 +76,17 @@ def one_at_a_time(repo):
         yield
 
 
+def _local_state(repo):
+    """The clone's hold bookkeeping, read fresh."""
+    fresh = config.load(repo)
+    return {k: fresh[k] for k in ("held", "handed_off") if k in fresh}
+
+
 def handoff(repo, cfg, store, **kwargs):
     """Snapshot this clone's working tree (index and HEAD untouched) and publish it as a task."""
     with one_at_a_time(repo):
-        return _handoff(repo, cfg, store, **kwargs)
+        # Reload inside the lock: a take that finished while this waited changed it.
+        return _handoff(repo, {**cfg, **_local_state(repo)}, store, **kwargs)
 
 
 def _handoff(repo, cfg, store, *, message=None, review=False, reason=None, agent="session",
@@ -150,7 +157,7 @@ def _handoff(repo, cfg, store, *, message=None, review=False, reason=None, agent
 
 def take(repo, cfg, store, task_id, emit=print):
     with one_at_a_time(repo):
-        return _take(repo, cfg, store, task_id, emit)
+        return _take(repo, {**cfg, **_local_state(repo)}, store, task_id, emit)
 
 
 def _take(repo, cfg, store, task_id, emit=print):
