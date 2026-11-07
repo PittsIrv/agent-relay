@@ -13,3 +13,4 @@ history rewrite, public post) is left to the owner with exact commands at the en
 - Release notes: `docs/release-notes-v0.3.0.md` is the text for the GitHub release (used by
   `gh release create --notes-file`). A rendered page for the owner was published separately.
   No tag or release was created.
+- Review of the release notes (Gemini, middle tier): ship with fixes. Added what is shared (checkpoint branch + issue text visible to repository collaborators; heuristic secret guard), prerequisites, and marked the hook experimental. Not done: disabling the hook (it is opt-in via `relay hook install`).
