@@ -32,3 +32,6 @@ Verdict: ship with fixes. Action taken: the first two.
 
 - Script: commands are read in document order (code blocks and inline `relay …` spans interleaved). An early version scanned code blocks first and ran `handoff --review` where the README's first mention is the plain hand back.
 - Review of this change (Gemini, middle tier): ship with fixes; regex parsing of Markdown is fragile (inline spans in prose, multi-line commands). Acknowledged, not changed: a wrong pick fails the run loudly, and the README's commands are single-line by convention.
+
+- Gap 1 (README): the only install command was `pipx install …`; a machine without pipx had no path. The README now gives a venv alternative (Python 3.11+ and Git only). With it the first-run path takes under a minute of commands.
+- Review of the README install fix (Gemini, middle tier): ship with fixes. Windows `Scripts` path → disagree: the README states macOS or Linux only. Regex-parsing points repeat the earlier review (acknowledged).
