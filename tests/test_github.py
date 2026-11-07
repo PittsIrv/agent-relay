@@ -11,7 +11,7 @@ from pathlib import Path
 from agent_relay import config, interactive, tasks
 from agent_relay.conversation import Conversation
 from agent_relay.demo import mock, setup
-from agent_relay.gitstore import Store, output, private_dir
+from agent_relay.gitstore import RelayError, Store, output, private_dir
 
 quiet = lambda _: None
 
@@ -125,6 +125,59 @@ class GitHubConversationTests(unittest.TestCase):
             future.result(timeout=20)
         self.assertEqual(self.store.read()[1]["tasks"][task["id"]]["status"], "cancelled")
         self.assertTrue(list(private_dir(self.a).glob("attempts/*/recovery.json")))
+
+    def reviewed(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        task = self.store.read()[1]["tasks"][task["id"]]
+        self.assertEqual(task["status"], "review")
+        return task
+
+    def pr_comments(self, number):
+        return [c["body"] for c in self.db()["comments"] if c["issue_url"].endswith(f"/issues/{number}")]
+
+    def test_cancel_after_review_closes_the_pr_keeps_the_branch_and_is_undoable(self):
+        task = self.reviewed()
+        tasks.cancel(self.store, task["id"], worker=config.load(self.a)["worker"], by="alice")
+        self.talk(self.a).flush(self.store.read()[1]["tasks"][task["id"]])
+        pull = self.db()["pulls"][str(task["pr"])]
+        self.assertEqual(pull["state"], "closed")
+        notes = [b for b in self.pr_comments(task["pr"]) if "Closed by relay cancel from alice; the branch is kept." in b]
+        self.assertEqual(len(notes), 1)
+        self.assertTrue(output(self.a, "ls-remote", "--heads", "origin", task["checkpoint"]["branch"]), "branch must be kept")
+        cancelled = self.store.read()[1]["tasks"][task["id"]]
+        self.assertEqual((cancelled["status"], cancelled["pr"]), ("cancelled", task["pr"]))
+        self.talk(self.a).flush(cancelled)  # Narrating again must not repeat the note.
+        self.assertEqual(len([b for b in self.pr_comments(task["pr"]) if "relay cancel" in b]), 1)
+        self.edit_db(lambda db: db["pulls"][str(task["pr"])].update(state="open"))  # A person reopens it.
+        self.talk(self.a).sync("main")
+        self.assertEqual(self.db()["pulls"][str(task["pr"])]["state"], "open", "reopening undoes the close")
+        self.assertEqual(self.store.read()[1]["tasks"][task["id"]]["status"], "cancelled")
+
+    def test_only_the_owner_can_cancel_a_reviewed_task(self):
+        task = self.reviewed()
+        with self.assertRaises(RelayError) as caught:
+            tasks.cancel(self.store, task["id"], worker="w", by="bob")
+        self.assertIn("Only alice can cancel", str(caught.exception))
+        self.comment(task["issue"], "/relay cancel", "bob")
+        report = self.talk(self.b).sync("main")
+        self.assertEqual([c["result"] for c in report["commands"]], ["refused"])
+        again = self.store.read()[1]["tasks"][task["id"]]
+        self.assertEqual(again["status"], "review")
+        self.assertEqual(self.db()["pulls"][str(task["pr"])]["state"], "open")
+        self.assertTrue(any("only alice can cancel" in b for b in self.pr_comments(task["issue"])))
+
+    def test_owner_comment_cancels_a_reviewed_task_and_closes_its_pr(self):
+        task = self.reviewed()
+        self.comment(task["issue"], "/relay cancel", "alice")
+        self.talk(self.b).sync("main")
+        self.assertEqual(self.store.read()[1]["tasks"][task["id"]]["status"], "cancelled")
+        self.assertEqual(self.db()["pulls"][str(task["pr"])]["state"], "closed")
+
+    def test_cancelling_a_task_still_in_flight_needs_no_ownership(self):
+        task = self.add()
+        tasks.cancel(self.store, task["id"], worker="w", by="bob")
+        self.assertEqual(self.store.read()[1]["tasks"][task["id"]]["status"], "cancelled")
 
     def test_merged_pr_marks_done_and_unblocks_dependents(self):
         first = self.add()

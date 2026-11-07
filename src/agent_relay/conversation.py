@@ -18,6 +18,7 @@ from .github import GitHub, Truncated
 MARKER = "<!-- relay:{task}:{n} -->"
 OWNED = "<!-- relay-task:{task} -->"
 RETIRED = "<!-- relay-retired:{task}:{pr} -->"
+CANCELLED = "<!-- relay-cancelled:{task}:{pr} -->"
 SILENT = {"checkpoint", "created"}
 DEFERRABLE = (RelayError, OSError, ValueError, KeyError, TypeError)  # Retried on a later flush.
 VERBS = ("note", "retry", "cancel")
@@ -188,6 +189,8 @@ class Conversation:
                 # A crash between posting and recording must not post twice: check the thread itself.
                 remote = "\n".join(c.get("body") or "" for c in self.gh.issue_comments(task["issue"]))
                 for ev in pending:
+                    if ev["kind"] == "cancelled" and ev.get("cancel_pr"):
+                        self._close_cancelled(task, ev)
                     marker = MARKER.format(task=task["id"], n=ev["n"])
                     body = self.render(task, ev, state)
                     if body and marker not in remote:
@@ -195,6 +198,20 @@ class Conversation:
                     posted.add(f"{task['id']}:{ev['n']}")
                     self._save("posted.json", sorted(posted))
             return task
+
+    def _close_cancelled(self, task, ev):
+        """A cancel after review closes that attempt's PR: say why first, then close. The branch
+        is kept and nothing is deleted, so reopening the PR undoes it."""
+        number = ev["cancel_pr"]
+        note = CANCELLED.format(task=task["id"], pr=number)
+        pull = self.gh.pull(number) or {}
+        if pull.get("merged"):
+            return
+        if not any(note in (c.get("body") or "") for c in self.gh.issue_comments(number)):
+            self.gh.comment(number, f"Closed by relay cancel from {ev.get('by') or 'the task owner'}; "
+                                    f"the branch is kept.\n{note}")
+        if pull.get("state") == "open":
+            self.gh.close_pr(number)
 
     def _open_pr(self, task, state):
         cp, epoch = task["checkpoint"], tasks.current_result(task) or task["epoch"]
@@ -337,6 +354,15 @@ class Conversation:
                 continue
             text = words[2].strip() if len(words) > 2 else ""
             result = tasks.command(self.store, comment["id"], task_id, words[1], text, self.worker, login)
+            if result == "refused":
+                owner = (state["tasks"].get(task_id) or {}).get("requested_by") or "the task owner"
+                try:
+                    self.gh.comment(number, f"@{login} only {owner} can cancel a task that has reached review; "
+                                            "this command was not applied.")
+                except RelayError:
+                    pass
+                applied.append({"task": task_id, "verb": words[1], "by": login, "result": result})
+                continue
             if result and result != "ignored":
                 applied.append({"task": task_id, "verb": words[1], "by": login, "result": result})
                 try:

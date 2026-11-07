@@ -168,7 +168,7 @@ Details and failure analysis: [architecture](docs/architecture.md) ·
 | `relay take TASK` | Hold a task and check it out locally |
 | `relay hook install [--share-prompt]` / `uninstall` | Claude Code usage-limit hook |
 | `relay status [--json]` / `relay show TASK [--json]` | Board and timeline |
-| `relay note TASK TEXT` / `retry TASK [TEXT]` / `cancel TASK` | Steer from the terminal |
+| `relay note TASK TEXT` / `retry TASK [TEXT]` / `cancel TASK` | Steer from the terminal. Cancelling a task that has reached review closes its PR (branch kept; reopen to undo) and is allowed only to the person who requested it |
 | `relay sync` | Import labelled issues, apply `/relay` comments, mark merged PRs done (workers do this every minute) |
 | `relay doctor` / `relay demo` | Prerequisites / offline demo |
 
