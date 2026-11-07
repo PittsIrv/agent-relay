@@ -2,6 +2,8 @@
 
 ## 2026-11-07 · v0.3: proven over real GitHub
 
+**Published** as the GitHub pre-release [v0.3.0](https://github.com/PittsIrv/agent-relay/releases/tag/v0.3.0).
+
 **Try:** follow the README from `pipx install …` (or the venv line) to `relay take` and
 `relay handoff` in a fresh clone; it takes about a minute.
 
