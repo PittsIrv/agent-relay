@@ -8,8 +8,8 @@ Never run by the unit-test suite or CI: it does nothing unless RELAY_E2E_REPO is
 private scratch repo whose name contains sandbox, scratch, e2e or test, like e2e_github.py).
 
 What it does
-- Makes an empty temp directory and a fresh clone of the repo; nothing from this checkout is
-  used. The tool is installed with the install command the README gives (pipx, else the
+- Makes an empty temp directory and clones the repo with the README's own clone command
+  (OWNER/REPO filled in); nothing from this checkout is used. The tool is installed with the install command the README gives (pipx, else the
   README's venv/pip alternative), into the temp directory.
 - Reads the commands out of the README's code blocks and runs them literally, in the order a
   new user would: init, add, status (to learn the task id), take, hand back with handoff.
@@ -133,8 +133,13 @@ def first_run(slug, work, env):
         install = install.replace("~/.relay", str(work / "venv")).replace("$HOME/.relay", str(work / "venv"))
     step("install the tool", install, work, env)
     step("the tool runs", "relay --version", work, env)
-    step("fresh clone of the repository", f"git clone --quiet https://github.com/{slug}.git project", work, env)
-    project = work / "project"
+    clone = need("clone the shared repository", "gh repo clone")
+    if not clone:
+        return
+    name = slug.split("/")[-1]
+    literal = re.sub(r"\bREPO\b", name, clone.replace("OWNER/REPO", slug))
+    step("fresh clone of the repository", literal, work, env)
+    project = work / name
     step("git identity for commits", "git config user.name 'First Run' && git config user.email first@example.invalid",
          project, env)
     step("gh is signed in", "gh auth status", project, env)
