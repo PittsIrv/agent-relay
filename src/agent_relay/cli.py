@@ -61,7 +61,7 @@ def parser():
     retry = sub.add_parser("retry", help="Requeue a blocked, review or cancelled task from its latest checkpoint")
     retry.add_argument("task")
     retry.add_argument("note", nargs="?")
-    cancel = sub.add_parser("cancel", help="Cancel a task; a running agent stops at its next heartbeat")
+    cancel = sub.add_parser("cancel", help="Cancel a task; a running agent stops at its next heartbeat, a reviewed task's PR is closed (owner only)")
     cancel.add_argument("task")
     sub.add_parser("sync", help="Import labelled issues, apply /relay comments, mark merged PRs done")
     sub.add_parser("doctor", help="Check prerequisites without launching an agent")
