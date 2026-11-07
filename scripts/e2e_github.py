@@ -281,6 +281,28 @@ def cancel(slug, alice, bob, sa, sb):
     mock(bob, "finish-fresh", emit=quiet).run(once=True)
     check("a cancelled task is not claimed again", task_of(sb, tid)["status"] == "cancelled")
 
+    # Cancel after review: owner only, closes the PR, keeps the branch, undone by reopening.
+    tid, issue = add_task(alice, "Finish quickly, then get cancelled")
+    mock(bob, "finish-fresh", emit=quiet).run(once=True)
+    task = task_of(sa, tid)
+    check("the task reached review with a PR", task["status"] == "review" and task.get("pr"), task["status"])
+    code, out = relay(bob, "cancel", tid)
+    check("bob (not the owner) is refused", code != 0 and "Only alice can cancel" in out, out)
+    check("the refusal changed nothing", task_of(sa, tid)["status"] == "review" and
+          gh(slug, "GET", f"pulls/{task['pr']}")["state"] == "open")
+    code, out = relay(alice, "cancel", tid)
+    check("alice (the owner) cancels it", code == 0, out)
+    pull = gh(slug, "GET", f"pulls/{task['pr']}")
+    check("its PR is closed", pull["state"] == "closed")
+    thread = [c["body"] for c in gh(slug, "GET", f"issues/{task['pr']}/comments?per_page=100")]
+    check("the PR says who closed it and that the branch is kept",
+          any("Closed by relay cancel from alice; the branch is kept." in body for body in thread), thread)
+    check("the branch is kept", bool(output(bob, "ls-remote", "--heads", "origin", task["checkpoint"]["branch"])))
+    gh(slug, "PATCH", f"pulls/{task['pr']}", {"state": "open"})
+    relay(bob, "sync")
+    check("reopening the PR undoes the close and leaves the task cancelled",
+          gh(slug, "GET", f"pulls/{task['pr']}")["state"] == "open" and task_of(sa, tid)["status"] == "cancelled")
+
 
 def usage_limit(slug, alice, bob, sa, sb):
     scenario("5. usage-limit handoff")

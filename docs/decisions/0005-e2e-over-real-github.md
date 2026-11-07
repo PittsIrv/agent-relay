@@ -21,9 +21,12 @@ real `gh` calls, issue/PR behaviour and Git refs agree with it.
 - Rerunnable: the script closes the Relay-opened issues (ownership marker) and PRs (`relay/*`
   heads) and deletes `relay/*` branches in the scratch repo at the start and end, and seeds `main` if the repo is empty.
 
-## Scenarios and first results (36/36)
+## Scenarios and results (45/45)
 
-take 7/7, hand back 9/9, supersede 5/5, cancel 7/7, usage-limit handoff 8/8.
+take 7/7, hand back 9/9, supersede 5/5, cancel 16/16, usage-limit handoff 8/8. The cancel
+scenario includes the Router's rule (decision 0006): cancel after review is owner-only,
+closes the PR with a note, keeps the branch, and reopening the PR undoes it. First run,
+before that rule: 36/36.
 
 ## Script bugs found on the way (not product bugs)
 
