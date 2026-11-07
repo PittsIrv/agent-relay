@@ -148,6 +148,10 @@ def main(argv=None):
             cfg = config.initialize(repo, args.remote, check, **fields)
             print(f"Enrolled this clone as {cfg['owner']} (worker {cfg['worker']}, {cfg['mode']}).")
             print(f"GitHub conversation: {slug or 'off'}. Code and task text are shared; logs and credentials stay local.")
+            if not slug and not args.no_github:
+                print("GitHub is off for this clone (it needs a github.com remote and a signed-in `gh`). If this "
+                      "repository is on github.com, run `gh auth login` and then `relay init` again; "
+                      "otherwise pass --no-github to skip this notice.")
             print("Next: relay add 'your task' (or label an issue 'relay'), then relay start --agent claude")
             return
         cfg = config.load(repo)
@@ -163,7 +167,8 @@ def main(argv=None):
                 raise RelayError("Invalid base branch")
             refs = output(repo, "ls-remote", "--refs", cfg["remote"], f"refs/heads/{base}")
             if not refs:
-                raise RelayError("Base branch is not on the remote; push it before adding a task")
+                raise RelayError(f"Branch {base!r} is not on the remote. Push it first "
+                                 f"(`git push -u {cfg['remote']} {base}`), or start from another with `--base main`.")
             sha = refs.split()[0]
             task_id = tasks.add(store, args.prompt, sha, base_branch=base, created_by=cfg["worker"],
                                 after=args.after, by=who, requested_by=cfg.get("owner"), for_=args.for_)
@@ -216,7 +221,7 @@ def main(argv=None):
         elif args.action == "show":
             _, state = store.read()
             if args.task not in state["tasks"]:
-                raise RelayError("Unknown task")
+                raise RelayError("Unknown task; run `relay status` to see the task ids")
             task = state["tasks"][args.task]
             if args.json:
                 print(json.dumps(task, indent=2))

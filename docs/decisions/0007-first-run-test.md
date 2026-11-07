@@ -33,5 +33,11 @@ Verdict: ship with fixes. Action taken: the first two.
 - Script: commands are read in document order (code blocks and inline `relay …` spans interleaved). An early version scanned code blocks first and ran `handoff --review` where the README's first mention is the plain hand back.
 - Review of this change (Gemini, middle tier): ship with fixes; regex parsing of Markdown is fragile (inline spans in prose, multi-line commands). Acknowledged, not changed: a wrong pick fails the run loudly, and the README's commands are single-line by convention.
 
+- Gap 2 (errors with no next step), found by running the mistakes a first-timer makes: outside a Git
+  repository, no `origin` remote, `add` on a branch that is not pushed, an unknown task id (take, show,
+  cancel, retry, note), and `init` finding no usable `gh` (it silently turned GitHub off). Each message
+  now names the command to run next. One PR for all of them: they are the same change (message text) and
+  share one test file, `tests/test_first_run_errors.py`, which drives the CLI the way a new user does.
+- Review of the error messages (Gemini, middle tier): ship with fixes. Blanket rewrap of every `rev-parse` failure → agree, now only when git says "not a git repository". The `gh auth login` hint was unconditional → agree, reworded to apply only if the repository is on github.com. Move the advice into the CLI layer with typed exceptions → disagree: one entry point, one tool; the strings live next to the raises, which keeps them from drifting.
 - Gap 1 (README): the only install command was `pipx install …`; a machine without pipx had no path. The README now gives a venv alternative (Python 3.11+ and Git only). With it the first-run path takes under a minute of commands.
 - Review of the README install fix (Gemini, middle tier): ship with fixes. Windows `Scripts` path → disagree: the README states macOS or Linux only. Regex-parsing points repeat the earlier review (acknowledged).

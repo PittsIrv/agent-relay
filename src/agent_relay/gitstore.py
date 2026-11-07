@@ -30,7 +30,13 @@ def output(repo, *args, **kwargs):
 
 
 def repository(path="."):
-    return Path(output(path, "rev-parse", "--show-toplevel"))
+    try:
+        return Path(output(path, "rev-parse", "--show-toplevel"))
+    except RelayError as exc:
+        if "not a git repository" not in str(exc).lower():
+            raise
+        raise RelayError("This folder is not inside a Git repository. cd into your clone of the shared "
+                         "repository, then run relay again.") from exc
 
 
 def private_dir(repo):
@@ -48,7 +54,8 @@ class Store:
         if remote.startswith("-"):
             raise RelayError("Remote must be a configured Git remote name")
         if remote not in output(repo, "remote").splitlines():
-            raise RelayError(f"Git remote {remote!r} is not configured")
+            raise RelayError(f"Git remote {remote!r} is not configured. Add it with "
+                             f"`git remote add {remote} <url>`, or choose another with `relay init --remote NAME`.")
 
     def read(self):
         refs = output(self.repo, "ls-remote", "--refs", self.remote, STATE_REF)

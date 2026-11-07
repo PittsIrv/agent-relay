@@ -170,7 +170,7 @@ def _take(repo, cfg, store, task_id, emit=print):
     who = label(cfg)
     current = store.read()[1]["tasks"].get(task_id)
     if not current:
-        raise RelayError("Unknown task")
+        raise RelayError("Unknown task; run `relay status` to see the task ids")
     # Fetch before holding so a network failure cannot leave a hold nobody can find.
     git(repo, "fetch", "--quiet", "--no-tags", cfg["remote"], (current.get("checkpoint") or {}).get("sha") or current["base"])
     task = tasks.hold(store, task_id, cfg["worker"], by=who)
