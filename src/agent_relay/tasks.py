@@ -140,10 +140,10 @@ def hold(store, task_id, worker, by=None, now=None):
         current = time.time() if now is None else now
         task = state["tasks"].get(task_id)
         if not task:
-            raise RelayError("Unknown task")
+            raise RelayError("Unknown task; run `relay status` to see the task ids")
         expired = task["status"] == "running" and task["lease"]["until"] < current
         if task["status"] not in ("queued", *REQUEUEABLE) and not expired:
-            raise RelayError(f"Task is {task['status']}; only queued, review, blocked or cancelled tasks can be taken")
+            raise RelayError(f"Task is {task['status']}; only queued, review, blocked or cancelled tasks can be taken (see `relay status`)")
         # A hold is reversible until the person hands work back, so its PR stays linked (and
         # protected from retirement) until then; only the status is restored if taking fails.
         task["held_from"] = {"status": task["status"], "epoch": task["epoch"]}
@@ -254,7 +254,7 @@ def annotate(store, task_id, **fields):
     def mutate(state):
         task = state["tasks"].get(task_id)
         if not task:
-            raise RelayError("Unknown task")
+            raise RelayError("Unknown task; run `relay status` to see the task ids")
         missing = {k: v for k, v in fields.items() if task.get(k) is None}
         if not missing:
             return None
@@ -273,7 +273,7 @@ def retry(store, task_id, note=None, worker=None, by=None):
     def mutate(state):
         task = state["tasks"].get(task_id)
         if not task:
-            raise RelayError("Unknown task")
+            raise RelayError("Unknown task; run `relay status` to see the task ids")
         if task["status"] not in REQUEUEABLE:
             raise RelayError("Only blocked, review or cancelled tasks can be retried")
         task["status"] = "queued"
@@ -288,7 +288,7 @@ def add_note(store, task_id, text, worker=None, by=None):
     def mutate(state):
         task = state["tasks"].get(task_id)
         if not task:
-            raise RelayError("Unknown task")
+            raise RelayError("Unknown task; run `relay status` to see the task ids")
         _note(task, text, by)
         event(task, "note", worker=worker, by=by, note=text[:2000])
         return task_id
@@ -307,7 +307,7 @@ def cancel(store, task_id, worker=None, by=None):
     def mutate(state):
         task = state["tasks"].get(task_id)
         if not task:
-            raise RelayError("Unknown task")
+            raise RelayError("Unknown task; run `relay status` to see the task ids")
         if task["status"] in ("done", "cancelled"):
             return None
         reviewed = task["status"] == "review"
