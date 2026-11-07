@@ -24,8 +24,8 @@ opens a draft PR. Nobody shares an account, and nobody has to be awake to say
 - **Small.** macOS or Linux, Python 3.11+, Git and the `gh` CLI. No server, no
   database, no Python dependencies.
 
-> **Status: alpha (v0.2).** The two-clone workflow is tested end to end, and a live
-> run used real Codex as the successor. Real provider usage-limit events and
+> **Status: alpha (v0.3).** The two-clone workflow is tested end to end, including over
+> real GitHub (45 scenario checks), and a live run used real Codex as the successor. Real provider usage-limit events and
 > multi-device operation over GitHub have not yet been observed in the field. See
 > [validation](docs/validation.md).
 
@@ -169,6 +169,22 @@ Details and failure analysis: [architecture](docs/architecture.md) ·
   past the cap are not imported; duplicate checks defer rather than guess.
 - Alpha: everyone on a repository should run the same Relay version.
 - Windows is not supported (workers freeze and stop agents with POSIX process groups).
+
+## Known limits
+
+- **End-to-end tests share one GitHub login.** `scripts/e2e_github.py` runs the take,
+  hand back, supersede, cancel and usage-limit scenarios between two clones over real
+  GitHub, but both clones act through one `gh` login; the two owners differ only by
+  Relay identity. Scenarios that need two logins (write access revoked, an issue assigned
+  to another login) are covered by the offline fake-`gh` suite only.
+- **The real usage-limit hook is untested.** The Claude Code `StopFailure` hook is
+  exercised with a synthetic payload. It has not been run against a real rate-limit
+  event.
+- **Real provider limits and multi-device use are unobserved.** See
+  [validation](docs/validation.md).
+- **Cancelling after review is owner-only** and closes the task's PR (branch kept);
+  there is no maintainer override yet.
+- Everything under [What it does not do](#what-it-does-not-do) also applies.
 
 ## Commands
 
