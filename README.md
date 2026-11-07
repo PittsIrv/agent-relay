@@ -67,8 +67,14 @@ PR, merges it, and prints the issue thread above. From a checkout:
 
 ## Set up with a friend
 
-Both of you: a clone of the same repository, push access, `gh auth login`, and a
-signed-in `claude` or `codex`. Then, in each clone:
+Both of you: push access to the same repository, `gh auth login`, and a signed-in
+`claude` or `codex`. Each of you clones it (use your own repository's owner and name):
+
+```sh
+gh repo clone OWNER/REPO && cd REPO   # or: git clone https://github.com/OWNER/REPO.git
+```
+
+Then, inside the clone:
 
 ```sh
 relay init --check 'python -m unittest discover -s tests'
