@@ -41,7 +41,7 @@ def scan_tree(repo, tree):
             raise RelayError(f"Checkpoint blocked: possible credential in {name!r}")
 
 
-def snapshot(worktree, parent, task_id, epoch):
+def snapshot(worktree, parent, task_id, epoch, label="unvalidated checkpoint"):
     fd, index = tempfile.mkstemp(prefix="relay-index-")
     os.close(fd)
     os.unlink(index)
@@ -56,7 +56,7 @@ def snapshot(worktree, parent, task_id, epoch):
         if tree == output(worktree, "rev-parse", f"{parent}^{{tree}}"):
             return parent
         return output(worktree, "commit-tree", tree, "-p", parent, "-m",
-                      f"relay: unvalidated checkpoint {task_id} attempt {epoch}")
+                      f"relay: {label} {task_id} attempt {epoch}")
     finally:
         Path(index).unlink(missing_ok=True)
         Path(index + ".lock").unlink(missing_ok=True)
@@ -66,3 +66,10 @@ def publish(repo, remote, sha, task_id, epoch):
     branch = f"relay/checkpoints/{task_id}/{epoch}"
     git(repo, "push", "--quiet", remote, f"{sha}:refs/heads/{branch}")
     return {"sha": sha, "branch": branch, "validated": False}
+
+
+def summarize(repo, base, sha):
+    """What changed relative to the task base, computed by Git rather than by a model."""
+    names = output(repo, "diff", "--name-only", base, sha).splitlines()
+    return {"files": names[:20], "file_count": len(names),
+            "stat": output(repo, "diff", "--shortstat", base, sha)}

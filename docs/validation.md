@@ -1,32 +1,141 @@
 # Validation scope
 
-The test suite uses temporary bare Git remotes, independent clones and real child
-processes. It never spends provider quota or writes to GitHub.
+## Automated (every CI run)
 
-Covered scenarios:
+68 tests on temporary bare Git remotes, independent clones, real child processes,
+fake agents and an offline `gh` stand-in (`agent_relay/fake_gh.py`). They never
+spend provider quota or write to GitHub.
+
+Coordination and recovery:
 
 - Interrupted fake agent leaves uncommitted edits; another clone fetches and completes them.
-- Competing claims yield one lease owner.
-- Expired workers cannot overwrite a successor's state.
-- Pausing preserves partial work and releases the task.
-- Paused workers do not claim tasks.
-- Sensitive checkpoint filenames block publication and retain local work.
-- Authentication-style agent failure blocks instead of causing retry churn.
-- Snapshot creation leaves the checkout's index and HEAD unchanged.
-- Ordinary agent text mentioning rate limits is not mistaken for a limit event.
-- Failed checkpoint pushes retain local recovery coordinates without advertising them.
-- Common generated caches stay out of snapshots; retries preserve checkpoint pointers.
+- Competing claims yield one lease owner; expired workers cannot overwrite a successor.
+- Pausing preserves partial work and releases the task; paused workers do not claim.
+- Sensitive files block publication and stay local; caches stay out of snapshots.
+- Failed pushes retain local recovery coordinates without advertising them.
+- Authentication-style failures block instead of retrying; ordinary prose mentioning
+  "rate limit" is not a limit; the structured shape of a live Claude Code auth
+  failure is classified correctly.
 
-`relay demo` is the reproducible end-to-end demonstration. It also verifies the
-original main branch remains unchanged and the receiving worker's check passes.
+Interactive handoff:
 
-Provider command flags were checked against locally installed `codex exec --help`
-and `claude --help` during initial development. This checks CLI shape only. No real
-provider session, subscription permission, exact quota reset, cross-device timing,
-or universal secret detection is certified by this release.
+- The `StopFailure(rate_limit)` hook publishes uncommitted work with the owner's
+  status and HEAD unchanged, and another clone finishes it.
+- Other error types and clean trees do nothing; repeated firing reuses one task;
+  a credentials file blocks the hook and the reason is logged locally.
+- `relay take` holds a task (never expires, workers skip it), refuses a dirty
+  checkout, and `relay handoff` returns it with a new attempt and note.
+- Hook install merges with existing settings, is idempotent, and is Git-excluded.
+
+GitHub conversation:
+
+- Issue, comment sequence and draft PR (`Closes #N`) for a two-attempt handoff;
+  re-flushing from both clones posts no duplicates; no `@` mentions.
+- Issue import requires write access and is idempotent across clones.
+- `/relay retry` from a writer applies once and reaches the next prompt; the same
+  command from a read-only user is ignored.
+- `/relay cancel` stops a running agent at its next heartbeat; files stay local.
+- A merged PR marks the task done and unblocks `--after` dependents.
+- A GitHub outage does not block a handoff; deferred comments post later.
+- Assigned issues go only to the assignee's agent; `--accept-from` and the daily
+  cap hold.
+
+Regressions for the 2026-11-06 independent review:
+
+- A retried task opens a new PR for its new attempt; merging the old attempt's PR
+  does not complete it.
+- An issue Relay opened for its own task is never imported as a second task, even
+  before its number is recorded.
+- `/relay cancel` reaches a running agent through its own worker's sync.
+- Commands after 130 ordinary comments (beyond the first API page) are applied.
+- Revoked write access stops being honoured once the permission cache expires.
+- Losing the local "posted" cache does not duplicate comments.
+- A hanging `gh` call times out without blocking task creation.
+- A failed `relay take` restores the task's previous state instead of stranding it.
+- The usage-limit hook publishes new work after the previous task was completed.
+
+Regressions for the re-review of those fixes:
+
+- A stale, late PR creation for an old attempt is closed as superseded and never
+  linked to the newer attempt; merging it does not complete the task.
+- Retrying a task in review closes its superseded PR on GitHub.
+- A `gh` call slower than the lease never costs a running worker its lease.
+- An issue created just before a crash is adopted, not duplicated.
+
+Regressions for the third review:
+
+- A failed `relay take` of a task in review keeps its PR open and able to complete it.
+- A failed `relay take` of an expired running task returns it to the queue, claimable.
+- Recording the same PR twice is a no-op, never a close.
+- Closing a stale PR during a GitHub outage is retried on the next flush.
+
+Regressions for the fourth review:
+
+- A late attach from the old attempt never closes the PR a failed take restored.
+- A state push that landed but reported a local failure, followed by another
+  writer's push, is applied exactly once.
+- A retirement note that failed after the PR closed is posted once, later.
+
+Regressions for the fifth review:
+
+- A stale retirement that lands while a take is in progress leaves the PR open,
+  and the PR still completes the task after the take fails.
+- Handing back a taken task with `--review` opens a new PR and closes the old one.
+
+Regressions for the sixth review:
+
+- A PR whose creation was in flight when a take failed still links and completes
+  the task; if creation had not started, it starts after the rollback.
+- A PR merged while its task is held completes the task.
+- Handing back new work keeps its own check result while retiring the old PR.
+- A retired PR is never attached again.
+- Duplicate checks refuse a thread longer than the page cap.
+
+Regressions for the seventh review:
+
+- Handing back new work never inherits the previous checkpoint's check result.
+- After a rolled-back take, epochs keep increasing; the old hold's token matches
+  nothing.
+- A thread past the page cap does not block closing a superseded PR.
+
+Regressions for the eighth review:
+
+- Two pending retirements both close even when the first PR's thread is capped.
+- A hand-off using configuration loaded before a take still returns the held task.
+- The offline stand-in keeps the label filter when listing issues in all states.
+
+Regressions for the ninth review:
+
+- A failed close of one superseded PR does not stop the next; it is retried later.
+- Hold records missing from the clone's configuration read as empty, never stale.
+
+Regressions for the tenth review:
+
+- Another clone closes a superseded PR the retiring clone never got to.
+- A failing note on a PR never blocks the issue thread; the note posts once later.
+- A late PR refused for a newer attempt is closed, and a failing note on it still
+  lets the clone's own narration through.
+
+`relay demo` runs the headline scenario end to end.
+
+## Live runs (2026-11-06, macOS, local bare remote, offline GitHub stand-in)
+
+| Successor | Version | Outcome |
+|---|---|---|
+| Claude Code (`--model haiku`) | 2.1.132 | Blocked in 10 s: the standalone CLI's login had expired (`authentication_failed`, HTTP 401). Classified as an error, not a limit; no retry loop; work preserved. |
+| Codex (ChatGPT login, default model) | 0.144.3 | Kept the predecessor's `mean()`, implemented `median()`; the owner's check (`unittest`) passed; draft PR opened. 34 s from claim to review. |
+
+The predecessor in both runs was a simulated interactive session: an uncommitted
+edit plus a `StopFailure` payload in the documented shape. The run script and its
+evidence are kept outside the repository.
+
+## Not yet validated
+
+- A provider-observed usage limit firing the real hook.
+- Two physical machines over a real GitHub repository.
+- Universal secret detection, skewed clocks, partitioned workers in the field.
 
 Before calling a provider adapter validated, record CLI version, platform, auth
 mode (never credentials), sanitized structured error type, remote checkpoint SHA,
-successor start, verification result, and owner pause behavior. Keep private
-transcripts outside public bug reports. Explicitly distinguish simulated limits
-from provider-observed limits.
+successor start, verification result and owner pause behavior. Keep private
+transcripts out of public reports.

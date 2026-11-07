@@ -1,0 +1,790 @@
+import concurrent.futures
+import fcntl
+import sys
+import io
+import json
+import tempfile
+import time
+import unittest
+from pathlib import Path
+
+from agent_relay import config, interactive, tasks
+from agent_relay.conversation import Conversation
+from agent_relay.demo import mock, setup
+from agent_relay.gitstore import Store, output, private_dir
+
+quiet = lambda _: None
+
+
+class GitHubConversationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.a, self.b, self.base = setup(self.root, github=True)
+        self.store = Store(self.a)
+
+    def edit_db(self, change=None):
+        """Read-modify-write under the same lock the fake gh holds, so a running worker's
+        narration cannot overwrite (or half-write) what the test changes."""
+        with (self.root / "github.json").open("a+") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            handle.seek(0)
+            db = json.loads(handle.read())
+            if change:
+                change(db)
+                handle.seek(0)
+                handle.truncate()
+                json.dump(db, handle)
+            return db
+
+    def db(self):
+        return self.edit_db()
+
+    def talk(self, repo):
+        return Conversation(repo, config.load(repo), Store(repo), quiet)
+
+    def add(self, prompt="Implement answer() returning 42", **kwargs):
+        cfg = config.load(self.a)
+        task_id = tasks.add(self.store, prompt, self.base, base_branch="main", created_by=cfg["worker"],
+                            by="alice", requested_by="alice", **kwargs)
+        return self.talk(self.a).flush(self.store.read()[1]["tasks"][task_id])
+
+    def comment(self, number, body, login):
+        def change(db):
+            db["comments"].append({"id": len(db["comments"]) + 1, "body": body, "user": {"login": login},
+                                   "created_at": "2999-01-01T00:00:00Z", "updated_at": "2999-01-01T00:00:00Z",
+                                   "issue_url": f"https://api.github.com/repos/demo/shared/issues/{number}"})
+        self.edit_db(change)
+
+    def test_handoff_is_narrated_once_on_issue_and_pr(self):
+        task = self.add()
+        self.assertEqual(task["issue"], 1)
+        mock(self.a, "limit", emit=quiet).run(once=True)
+        mock(self.b, "finish", emit=quiet).run(once=True)
+        task = self.store.read()[1]["tasks"][task["id"]]
+        self.assertEqual(task["status"], "review")
+        pull = self.db()["pulls"][str(task["pr"])]
+        self.assertTrue(pull["draft"])
+        self.assertEqual((pull["head"], pull["base"]), (task["checkpoint"]["branch"], "main"))
+        self.assertIn("Closes #1", pull["body"])
+        bodies = [c["body"] for c in self.db()["comments"]]
+        kinds = ["picked this up", "usage limit", "picked this up", "finished attempt 2"]
+        self.assertEqual(len(bodies), len(kinds))
+        for body, expected in zip(bodies, kinds):
+            self.assertIn(expected, body)
+        self.assertNotIn("@", "".join(bodies).replace("<!--", ""))
+        for repo in (self.a, self.b):
+            self.talk(repo).flush_all(self.store.read()[1])
+        self.assertEqual(len(self.db()["comments"]), len(kinds), "re-flushing must not duplicate comments")
+
+    def test_issue_import_requires_write_access_and_is_idempotent(self):
+        def file(db):
+            for number, login in ((10, "mallory"), (11, "alice")):
+                db["issues"][str(number)] = {"number": number, "title": f"Issue by {login}", "body": "Do it",
+                                             "state": "open", "labels": [{"name": "relay"}],
+                                             "user": {"login": login}}
+            db["permissions"]["mallory"] = "read"
+        self.edit_db(file)
+        first = self.talk(self.b).sync("main")
+        second = self.talk(self.a).sync("main")
+        self.assertEqual(first["imported"], [11])
+        self.assertEqual(second["imported"], [])
+        state = self.store.read()[1]
+        self.assertEqual([t["issue"] for t in state["tasks"].values()], [11])
+        task = next(iter(state["tasks"].values()))
+        self.assertEqual(task["prompt"], "Issue by alice\n\nDo it")
+        self.assertIn("queued this issue", self.db()["comments"][-1]["body"])
+
+    def test_comment_commands_from_writers_apply_exactly_once(self):
+        task = self.add()
+        mock(self.a, "error", emit=quiet).run(once=True)
+        self.assertEqual(self.store.read()[1]["tasks"][task["id"]]["status"], "blocked")
+        self.comment(1, "/relay retry the import path is wrong", "mallory")
+        self.comment(1, "/relay retry use answer.py at the repo root", "bob")
+        self.talk(self.a).sync("main")
+        self.talk(self.b).sync("main")
+        task = self.store.read()[1]["tasks"][task["id"]]
+        self.assertEqual(task["status"], "queued")
+        self.assertEqual([n["text"] for n in task["notes"]], ["use answer.py at the repo root"])
+        self.assertEqual(len(self.db()["reactions"]), 1)
+        self.assertIn("use answer.py at the repo root", interactive_prompt(task))
+
+    def test_cancel_comment_stops_a_running_agent(self):
+        task = self.add()
+        worker = mock(self.a, "wait", emit=quiet)
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            future = pool.submit(worker.run, True)
+            deadline = time.monotonic() + 10
+            while self.store.read()[1]["tasks"][task["id"]]["status"] != "running":
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.05)
+            self.comment(1, "/relay cancel", "alice")
+            self.talk(self.b).sync("main")
+            worker.heartbeat = 0.1
+            future.result(timeout=20)
+        self.assertEqual(self.store.read()[1]["tasks"][task["id"]]["status"], "cancelled")
+        self.assertTrue(list(private_dir(self.a).glob("attempts/*/recovery.json")))
+
+    def test_merged_pr_marks_done_and_unblocks_dependents(self):
+        first = self.add()
+        second = self.add("Use answer() in main.py", after=[first["id"]])
+        self.assertIsNone(tasks.claim(Store(self.b), "probe", task_id=second["id"]))
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        task = self.store.read()[1]["tasks"][first["id"]]
+        self.assertEqual(task["status"], "review")
+        self.edit_db(lambda db: db["pulls"][str(task["pr"])].update(merged=True))
+        self.assertEqual(self.talk(self.a).sync("main")["done"], [first["id"]])
+        self.assertEqual(tasks.claim(Store(self.b), "probe")["id"], second["id"])
+
+    def test_assigned_issue_goes_only_to_that_owners_agent(self):
+        self.edit_db(lambda db: db["issues"].update({"7": {
+            "number": 7, "title": "Bob, please add median()", "body": "", "state": "open",
+            "labels": [{"name": "relay"}], "user": {"login": "alice"}, "assignees": [{"login": "bob"}]}}))
+        self.talk(self.a).sync("main")
+        task = next(iter(self.store.read()[1]["tasks"].values()))
+        self.assertEqual((task["for"], task["requested_by"]), (["bob"], "alice"))
+        self.assertIn("Requested from **bob**'s agent", self.db()["comments"][-1]["body"])
+        mock(self.a, "finish-fresh", emit=quiet).run(once=True)
+        self.assertEqual(self.store.read()[1]["tasks"][task["id"]]["epoch"], 0, "alice's agent must not take bob's request")
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        self.assertEqual(self.store.read()[1]["tasks"][task["id"]]["status"], "review")
+
+    def test_owner_consent_policy(self):
+        from_alice = self.add()
+        config.update(self.b, accept_from=["carol"])
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        self.assertEqual(self.store.read()[1]["tasks"][from_alice["id"]]["epoch"], 0)
+        config.update(self.b, accept_from=["alice"], max_tasks_per_day=1)
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        self.assertEqual(self.store.read()[1]["tasks"][from_alice["id"]]["status"], "review")
+        second = self.add("Another task")
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        self.assertEqual(self.store.read()[1]["tasks"][second["id"]]["epoch"], 0, "daily cap reached")
+        presence = self.store.read()[1]["workers"][config.load(self.b)["worker"]]
+        self.assertEqual(presence["accepts"], "alice; up to 1 tasks/day")
+
+    def test_retry_after_review_gets_a_new_pr_and_old_merge_does_not_finish_it(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        first_pr = self.store.read()[1]["tasks"][task["id"]]["pr"]
+        tasks.retry(self.store, task["id"], note="also handle negatives")
+        self.edit_db(lambda db: db["pulls"][str(first_pr)].update(merged=True))
+        self.assertEqual(self.talk(self.a).sync("main")["done"], [], "an old attempt's PR cannot complete the task")
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        task = self.store.read()[1]["tasks"][task["id"]]
+        self.assertNotEqual(task["pr"], first_pr)
+        self.assertEqual(task["past_prs"][0]["pr"], first_pr)
+        self.assertEqual(self.db()["pulls"][str(task["pr"])]["head"], task["checkpoint"]["branch"])
+        self.edit_db(lambda db: db["pulls"][str(task["pr"])].update(merged=True))
+        self.assertEqual(self.talk(self.a).sync("main")["done"], [task["id"]])
+
+    def test_stale_pr_creation_cannot_attach_to_a_newer_attempt(self):
+        task = self.add()
+        good_gh = config.load(self.b)["gh"]
+        config.update(self.b, gh=["false"])  # Bob's PR creation is "in flight" (fails for now).
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        stale = self.store.read()[1]["tasks"][task["id"]]
+        self.assertEqual((stale["status"], stale["pr"]), ("review", None))
+        tasks.retry(self.store, task["id"], worker=config.load(self.a)["worker"], by="alice")
+        mock(self.a, "finish-fresh", emit=quiet).run(once=True)
+        live = self.store.read()[1]["tasks"][task["id"]]
+        self.assertEqual(live["epoch"], 2)
+        config.update(self.b, gh=good_gh)
+        self.talk(self.b)._open_pr(stale, self.store.read()[1])  # Bob's stale request finally lands.
+        after = self.store.read()[1]["tasks"][task["id"]]
+        self.assertEqual(after["pr"], live["pr"])
+        late = [p for p in self.db()["pulls"].values() if p["head"] == stale["checkpoint"]["branch"]]
+        self.assertEqual([p["state"] for p in late], ["closed"])
+        self.edit_db(lambda db: db["pulls"][str(late[0]["number"])].update(merged=True))
+        self.assertEqual(self.talk(self.a).sync("main")["done"], [])
+
+    def test_retry_closes_the_superseded_pr(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        old = self.store.read()[1]["tasks"][task["id"]]["pr"]
+        tasks.retry(self.store, task["id"], worker=config.load(self.a)["worker"], by="alice")
+        self.talk(self.a).flush(self.store.read()[1]["tasks"][task["id"]])
+        self.assertEqual(self.db()["pulls"][str(old)]["state"], "closed")
+
+    def test_slow_github_never_costs_the_lease(self):
+        task = self.add()
+        slow = [sys.executable, "-c", "import time; time.sleep(4)"]  # Each GitHub call outlasts the lease.
+        config.update(self.b, gh=slow)
+        worker = mock(self.b, "slow-finish", emit=quiet, ttl=3, heartbeat=1, sync=0.1)
+        worker.run(once=True)
+        self.assertEqual(self.store.read()[1]["tasks"][task["id"]]["status"], "review")
+
+    def test_orphaned_issue_is_adopted_not_duplicated(self):
+        cfg = config.load(self.a)
+        task_id = tasks.add(self.store, "Orphan", self.base, base_branch="main", created_by=cfg["worker"])
+        talk = self.talk(self.a)
+        task = self.store.read()[1]["tasks"][task_id]
+        talk.gh.create_issue("Orphan", talk.issue_body(task))  # Created, then the client crashed.
+        task = talk.flush(task)
+        self.assertEqual(task["issue"], 1)
+        self.assertEqual(len(self.db()["issues"]), 1)
+
+    def test_relay_owned_issue_is_never_imported_as_a_second_task(self):
+        task = self.add()
+        def unlink(db):  # Simulate the window between creating the issue and recording its number.
+            db["issues"]["1"]["user"]["login"] = "alice"
+        self.edit_db(unlink)
+        state_tasks = self.store.read()[1]["tasks"]
+        def drop_link(state):
+            state["tasks"][task["id"]]["issue"] = None
+            return True
+        self.store.change(drop_link)
+        self.assertEqual(self.talk(self.b).sync("main")["imported"], [])
+        self.assertEqual(len(self.store.read()[1]["tasks"]), len(state_tasks))
+
+    def test_cancel_reaches_a_running_agent_without_any_other_worker(self):
+        task = self.add()
+        worker = mock(self.a, "wait", emit=quiet, sync=0.2, heartbeat=0.2)
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            future = pool.submit(worker.run, True)
+            deadline = time.monotonic() + 10
+            while self.store.read()[1]["tasks"][task["id"]]["status"] != "running":
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.05)
+            self.comment(1, "/relay cancel", "bob")
+            future.result(timeout=20)
+        self.assertEqual(self.store.read()[1]["tasks"][task["id"]]["status"], "cancelled")
+
+    def test_commands_beyond_the_first_page_are_applied(self):
+        task = self.add()
+        mock(self.a, "error", emit=quiet).run(once=True)
+        def chatter(db):
+            for i in range(130):
+                db["comments"].append({"id": 1000 + i, "body": f"thinking out loud {i}", "user": {"login": "bob"},
+                                       "created_at": "2999-01-01T00:00:00Z", "updated_at": "2999-01-01T00:00:00Z",
+                                       "issue_url": "https://api.github.com/repos/demo/shared/issues/1"})
+        self.edit_db(chatter)
+        self.comment(1, "/relay retry fix the import", "bob")
+        self.talk(self.a).sync("main")
+        self.assertEqual(self.store.read()[1]["tasks"][task["id"]]["status"], "queued")
+
+    def test_revoked_write_access_stops_working(self):
+        from agent_relay import github
+        task = self.add()
+        mock(self.a, "error", emit=quiet).run(once=True)
+        talk = self.talk(self.a)
+        self.assertTrue(talk.gh.can_write("bob"))
+        self.edit_db(lambda db: db["permissions"].update(bob="read"))
+        original = github.PERMISSION_TTL
+        github.PERMISSION_TTL = 0
+        try:
+            self.comment(1, "/relay retry", "bob")
+            talk.sync("main")
+        finally:
+            github.PERMISSION_TTL = original
+        self.assertEqual(self.store.read()[1]["tasks"][task["id"]]["status"], "blocked")
+
+    def test_lost_local_cache_does_not_duplicate_comments(self):
+        self.add()
+        mock(self.a, "limit", emit=quiet).run(once=True)
+        before = len(self.db()["comments"])
+        (private_dir(self.a) / "posted.json").unlink()
+        self.talk(self.a).flush_all(self.store.read()[1])
+        self.assertEqual(len(self.db()["comments"]), before)
+
+    def test_github_timeout_is_contained(self):
+        config.update(self.a, gh=[sys.executable, "-c", "import time; time.sleep(5)"])
+        talk = self.talk(self.a)
+        talk.gh.timeout = 0.2
+        with self.assertRaisesRegex(Exception, "timed out"):
+            talk.gh.login()
+        task_id = tasks.add(self.store, "Slow GitHub", self.base, base_branch="main",
+                            created_by=config.load(self.a)["worker"])
+        task = talk.flush(self.store.read()[1]["tasks"][task_id])
+        self.assertIsNone(task["issue"])
+
+    def test_github_outage_never_blocks_a_handoff(self):
+        cfg = config.load(self.a)
+        config.update(self.a, gh=["false"])
+        task = self.add()
+        self.assertIsNone(task["issue"])
+        mock(self.a, "limit", emit=quiet).run(once=True)
+        self.assertEqual(self.store.read()[1]["tasks"][task["id"]]["status"], "queued")
+        config.update(self.a, gh=cfg["gh"])
+        self.talk(self.a).flush_all(self.store.read()[1])
+        task = self.store.read()[1]["tasks"][task["id"]]
+        self.assertEqual(task["issue"], 1)
+        self.assertEqual(len(self.db()["comments"]), 2, "deferred claim and handoff comments are posted later")
+
+
+    def failing_take(self, repo, task_id):
+        from unittest.mock import patch
+        real = interactive.git
+        def flaky(where, *args, **kwargs):
+            if args and args[0] == "switch":
+                raise interactive.RelayError("simulated checkout failure")
+            return real(where, *args, **kwargs)
+        with patch("agent_relay.interactive.git", side_effect=flaky):
+            with self.assertRaisesRegex(Exception, "checkout failure"):
+                interactive.take(repo, config.load(repo), Store(repo), task_id, emit=quiet)
+
+    def test_failed_take_of_a_reviewed_task_keeps_its_pr_live(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        pr = self.store.read()[1]["tasks"][task["id"]]["pr"]
+        self.failing_take(self.a, task["id"])
+        after = self.store.read()[1]["tasks"][task["id"]]
+        self.assertEqual((after["status"], after["pr"], after["pr_epoch"]), ("review", pr, tasks.current_result(after)))
+        self.talk(self.a).flush(after)  # The rolled-back hold must not close the restored PR.
+        self.assertEqual(self.db()["pulls"][str(pr)]["state"], "open")
+        self.edit_db(lambda db: db["pulls"][str(pr)].update(merged=True))
+        self.assertEqual(self.talk(self.a).sync("main")["done"], [task["id"]])
+
+    def test_retirement_overlapping_a_hold_never_closes_its_pr(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        before = self.store.read()[1]["tasks"][task["id"]]
+        held = tasks.hold(self.store, task["id"], "alice-desk")  # A take is in progress.
+        self.assertEqual(held["pr"], before["pr"], "a hold keeps the PR linked")
+        self.talk(self.b)._retire(before["pr"], before)  # A stale retirement lands mid-hold.
+        self.assertEqual(self.db()["pulls"][str(before["pr"])]["state"], "open")
+        tasks.unhold(self.store, task["id"], "alice-desk", held["epoch"])  # Then the take fails.
+        self.edit_db(lambda db: db["pulls"][str(before["pr"])].update(merged=True))
+        self.assertEqual(self.talk(self.a).sync("main")["done"], [task["id"]])
+
+    def test_handing_back_a_taken_task_retires_the_old_pr(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        old = self.store.read()[1]["tasks"][task["id"]]["pr"]
+        interactive.take(self.a, config.load(self.a), Store(self.a), task["id"], emit=quiet)
+        self.assertEqual(self.db()["pulls"][str(old)]["state"], "open", "taking is reversible")
+        (self.a / "answer.py").write_text("def answer():\n    return 42  # by hand\n")
+        back = interactive.handoff(self.a, config.load(self.a), Store(self.a), review=True, emit=quiet)
+        self.assertEqual(back["status"], "review")
+        self.assertNotEqual(back["pr"], old)
+        self.assertEqual(self.db()["pulls"][str(old)]["state"], "closed")
+
+    def review_without_pr(self):
+        task = self.add()
+        good_gh = config.load(self.b)["gh"]
+        config.update(self.b, gh=["false"])  # Bob's PR creation is still "in flight".
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        config.update(self.b, gh=good_gh)
+        return self.store.read()[1]["tasks"][task["id"]]
+
+    def test_pr_published_during_a_failed_take_still_completes_the_task(self):
+        stale = self.review_without_pr()
+        held = tasks.hold(self.store, stale["id"], "alice-desk")
+        self.talk(self.b)._open_pr(stale, self.store.read()[1])  # Lands mid-take.
+        tasks.unhold(self.store, stale["id"], "alice-desk", held["epoch"])
+        after = self.store.read()[1]["tasks"][stale["id"]]
+        self.assertEqual((after["status"], after["epoch"]), ("review", stale["epoch"] + 1), "epochs never go back")
+        self.assertEqual(tasks.current_result(after), stale["epoch"])
+        self.assertEqual(self.db()["pulls"][str(after["pr"])]["state"], "open")
+        self.edit_db(lambda db: db["pulls"][str(after["pr"])].update(merged=True))
+        self.assertEqual(self.talk(self.a).sync("main")["done"], [stale["id"]])
+
+    def test_pr_publication_resumes_after_a_failed_take(self):
+        stale = self.review_without_pr()
+        held = tasks.hold(self.store, stale["id"], "alice-desk")
+        tasks.unhold(self.store, stale["id"], "alice-desk", held["epoch"])
+        after = self.talk(self.b).flush(self.store.read()[1]["tasks"][stale["id"]])
+        self.assertIsNotNone(after["pr"], "the original attempt can still open its PR")
+
+    def test_pr_merged_while_held_completes_the_task(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        pr = self.store.read()[1]["tasks"][task["id"]]["pr"]
+        tasks.hold(self.store, task["id"], "alice-desk")
+        self.edit_db(lambda db: db["pulls"][str(pr)].update(merged=True))
+        self.assertEqual(self.talk(self.a).sync("main")["done"], [task["id"]])
+        self.assertIsNone(self.store.read()[1]["tasks"][task["id"]]["lease"])
+
+    def test_hand_back_keeps_its_own_check_result(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        held = tasks.hold(self.store, task["id"], "alice-desk")
+        back = tasks.update(self.store, task["id"], "alice-desk", held["epoch"], status="review",
+                            verification={"result": "passed"})
+        self.assertIsNone(back["pr"])
+        self.assertEqual(back["verification"], {"result": "passed"})
+        self.assertEqual(back["events"][-1]["check"], "passed")
+
+    def test_retired_pr_is_never_attached_again(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        old = self.store.read()[1]["tasks"][task["id"]]
+        tasks.retry(self.store, task["id"], worker=config.load(self.a)["worker"], by="alice")
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        live = self.store.read()[1]["tasks"][task["id"]]
+        self.store.change(lambda st: st["tasks"][task["id"]].update(pr=None) or True)  # Even with the slot empty...
+        self.assertFalse(tasks.attach_pr(self.store, task["id"], live["epoch"], old["pr"], True))
+
+    def test_duplicate_checks_refuse_a_truncated_thread(self):
+        from unittest.mock import patch
+        task = self.add()
+        for i in range(130):
+            self.comment(task["issue"], f"chatter {i}", "alice")
+        with patch("agent_relay.github.MAX_PAGES", 1):
+            with self.assertRaisesRegex(Exception, "not risking a duplicate"):
+                self.talk(self.a).gh.issue_comments(task["issue"])
+
+    def test_handing_back_new_work_never_inherits_an_old_check(self):
+        stale = self.review_without_pr()
+        self.assertIsNotNone(stale.get("verification"))
+        interactive.take(self.a, config.load(self.a), Store(self.a), stale["id"], emit=quiet)
+        (self.a / "answer.py").write_text("def answer():\n    return 43\n")
+        back = interactive.handoff(self.a, config.load(self.a), Store(self.a), review=True, emit=quiet)
+        self.assertIsNone(back.get("verification"))
+        self.assertIsNone([ev for ev in back["events"] if ev["kind"] == "review"][-1]["check"])
+
+    def test_a_rolled_back_hold_token_never_matches_a_later_hold(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        first = tasks.hold(self.store, task["id"], "alice-desk")
+        tasks.unhold(self.store, task["id"], "alice-desk", first["epoch"])
+        second = tasks.hold(self.store, task["id"], "alice-desk")
+        self.assertGreater(second["epoch"], first["epoch"])
+        with self.assertRaises(tasks.LeaseLost):
+            tasks.unhold(self.store, task["id"], "alice-desk", first["epoch"])
+        with self.assertRaises(tasks.LeaseLost):
+            tasks.update(self.store, task["id"], "alice-desk", first["epoch"], status="queued")
+
+    def test_a_capped_thread_does_not_block_closing_a_superseded_pr(self):
+        from unittest.mock import patch
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        old = self.store.read()[1]["tasks"][task["id"]]["pr"]
+        for i in range(130):
+            self.comment(task["issue"], f"chatter {i}", "alice")
+        tasks.retry(self.store, task["id"], worker=config.load(self.a)["worker"], by="alice")
+        with patch("agent_relay.github.MAX_PAGES", 1):
+            self.talk(self.a).flush(self.store.read()[1]["tasks"][task["id"]])
+        self.assertEqual(self.db()["pulls"][str(old)]["state"], "closed")
+
+    def test_two_retirements_close_even_when_the_first_pr_thread_is_capped(self):
+        from unittest.mock import patch
+        task = self.add()
+        alice = config.load(self.a)["worker"]
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        first = self.store.read()[1]["tasks"][task["id"]]["pr"]
+        tasks.retry(self.store, task["id"], worker=alice, by="alice")
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        second = self.store.read()[1]["tasks"][task["id"]]["pr"]
+        tasks.retry(self.store, task["id"], worker=alice, by="alice")
+        for i in range(130):
+            self.comment(first, f"review chatter {i}", "bob")
+        with patch("agent_relay.github.MAX_PAGES", 1):
+            self.talk(self.a).flush(self.store.read()[1]["tasks"][task["id"]])
+        self.assertEqual([self.db()["pulls"][str(n)]["state"] for n in (first, second)], ["closed", "closed"])
+
+    def test_another_clone_finishes_cleanup_the_retiring_clone_left(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        old = self.store.read()[1]["tasks"][task["id"]]["pr"]
+        tasks.retry(self.store, task["id"], worker=config.load(self.a)["worker"], by="alice")  # Alice never flushes.
+        self.talk(self.b).flush(self.store.read()[1]["tasks"][task["id"]])
+        self.assertEqual(self.db()["pulls"][str(old)]["state"], "closed")
+
+    def test_a_failing_pr_note_never_blocks_issue_narration(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        old = self.store.read()[1]["tasks"][task["id"]]["pr"]
+        tasks.retry(self.store, task["id"], worker=config.load(self.a)["worker"], by="alice", note="try again")
+        talk = self.talk(self.a)
+        real = talk.gh.comment
+        def pr_comments_fail(number, body):
+            if number == old:
+                raise interactive.RelayError("comments locked on this PR")
+            return real(number, body)
+        talk.gh.comment = pr_comments_fail
+        talk.flush(self.store.read()[1]["tasks"][task["id"]])
+        issue_bodies = [c["body"] for c in self.db()["comments"] if c["issue_url"].endswith(f"/issues/{task['issue']}")]
+        self.assertTrue(any("try again" in b for b in issue_bodies), "the retry was narrated")
+        self.assertEqual(self.db()["pulls"][str(old)]["state"], "closed")
+        self.talk(self.a).flush(self.store.read()[1]["tasks"][task["id"]])
+        self.assertEqual(len([c for c in self.db()["comments"] if "relay-retired" in c["body"]]), 1)
+
+    def test_a_refused_late_pr_with_a_failing_note_still_lets_narration_through(self):
+        task = self.add()
+        good_gh = config.load(self.b)["gh"]
+        config.update(self.b, gh=["false"])
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        stale = self.store.read()[1]["tasks"][task["id"]]
+        tasks.retry(self.store, task["id"], worker=config.load(self.a)["worker"], by="alice")
+        mock(self.a, "finish-fresh", emit=quiet).run(once=True)
+        config.update(self.b, gh=good_gh)
+        talk = self.talk(self.b)
+        real = talk.gh.comment
+        def notes_fail(number, body):
+            if "relay-retired" in body:
+                raise interactive.RelayError("comments locked on this PR")
+            return real(number, body)
+        talk.gh.comment = notes_fail
+        talk.flush(stale)  # Bob's late PR is refused; its note fails; Bob's narration still posts.
+        late = [p for p in self.db()["pulls"].values() if p["head"] == stale["checkpoint"]["branch"]]
+        self.assertEqual([p["state"] for p in late], ["closed"])
+        bodies = [c["body"] for c in self.db()["comments"] if c["issue_url"].endswith(f"/issues/{task['issue']}")]
+        self.assertTrue(any("finished attempt 1" in b for b in bodies))
+
+    def test_a_failed_close_does_not_stop_the_next_one(self):
+        task = self.add()
+        alice = config.load(self.a)["worker"]
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        first = self.store.read()[1]["tasks"][task["id"]]["pr"]
+        tasks.retry(self.store, task["id"], worker=alice, by="alice")
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        second = self.store.read()[1]["tasks"][task["id"]]["pr"]
+        tasks.retry(self.store, task["id"], worker=alice, by="alice")
+        self.edit_db(lambda db: db["pulls"][str(first)].update(state="open"))  # Both still open for Alice.
+        talk = self.talk(self.a)
+        real = talk.gh.close_pr
+        def flaky(number):
+            if number == first:
+                raise OSError("connection reset")
+            return real(number)
+        talk.gh.close_pr = flaky
+        talk.flush(self.store.read()[1]["tasks"][task["id"]])
+        self.assertEqual([self.db()["pulls"][str(n)]["state"] for n in (first, second)], ["open", "closed"])
+        self.talk(self.a).flush(self.store.read()[1]["tasks"][task["id"]])  # Retried later.
+        self.assertEqual(self.db()["pulls"][str(first)]["state"], "closed")
+
+    def test_hold_records_absent_from_config_read_as_empty(self):
+        cfg = config.load(self.a)
+        stale = {**cfg, "held": {"relay/gone": "gone"}}
+        config.save(self.a, {k: v for k, v in cfg.items() if k not in ("held", "handed_off")})
+        self.assertEqual({**stale, **interactive._local_state(self.a)}["held"], {})
+
+    def test_handoff_with_config_loaded_before_a_take_keeps_the_hold(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        early = config.load(self.a)  # Loaded before the take finished, e.g. by a waiting command.
+        interactive.take(self.a, config.load(self.a), Store(self.a), task["id"], emit=quiet)
+        (self.a / "answer.py").write_text("def answer():\n    return 42  # by hand\n")
+        back = interactive.handoff(self.a, early, Store(self.a), emit=quiet)
+        self.assertEqual(back["id"], task["id"], "the held task is handed back, not duplicated")
+        self.assertEqual(len(self.store.read()[1]["tasks"]), 1)
+        self.assertEqual(config.load(self.a)["held"], {})
+
+    def test_issue_listing_stand_in_keeps_the_label_filter_for_all_states(self):
+        self.add()
+        talk = self.talk(self.a)
+        talk.gh.create_issue("Unrelated", "not relay work", labels=())
+        self.assertEqual(len(talk.gh.labeled_issues(state="all")), 1)
+
+    def test_late_attach_from_the_old_attempt_never_closes_a_restored_pr(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        before = self.store.read()[1]["tasks"][task["id"]]
+        self.failing_take(self.a, task["id"])
+        self.assertTrue(tasks.attach_pr(self.store, task["id"], before["epoch"], before["pr"], True))
+        self.talk(self.b)._open_pr(before, self.store.read()[1])  # Bob's delayed attempt-1 completion.
+        self.talk(self.b)._retire(before["pr"], before)  # Even an explicit retirement is refused.
+        after = self.store.read()[1]["tasks"][task["id"]]
+        self.assertEqual(self.db()["pulls"][str(before["pr"])]["state"], "open")
+        self.assertFalse(any(ev["kind"] == "superseded" for ev in after["events"]))
+
+    def test_landed_push_is_never_applied_twice(self):
+        from subprocess import CompletedProcess
+        from unittest.mock import patch
+        from agent_relay import gitstore
+        real = gitstore.git
+        pushed = []
+        def landed_then_failed(repo, *args, **kwargs):
+            result = real(repo, *args, **kwargs)
+            if args[0] == "push" and not pushed and Path(repo) == self.a:
+                pushed.append(True)
+                Store(self.b).change(lambda st: st.setdefault("other", 1))  # Someone else pushes next.
+                return CompletedProcess(args, 1, b"", b"simulated local failure after the push landed")
+            return result
+        def bump(state):
+            state["count"] = state.get("count", 0) + 1
+            return state["count"]
+        with patch("agent_relay.gitstore.git", side_effect=landed_then_failed):
+            self.assertEqual(self.store.change(bump), 1)
+        state = self.store.read()[1]
+        self.assertEqual((state["count"], state["other"]), (1, 1))
+
+    def test_retirement_note_is_retried_after_a_partial_close(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        old = self.store.read()[1]["tasks"][task["id"]]["pr"]
+        tasks.retry(self.store, task["id"], worker=config.load(self.a)["worker"], by="alice")
+        talk = self.talk(self.a)
+        def outage(number, body):
+            raise interactive.RelayError("GitHub is down")
+        talk.gh.comment = outage
+        talk.flush(self.store.read()[1]["tasks"][task["id"]])  # Closed, but the note failed.
+        self.assertEqual(self.db()["pulls"][str(old)]["state"], "closed")
+        self.talk(self.a).flush(self.store.read()[1]["tasks"][task["id"]])
+        self.talk(self.a).flush(self.store.read()[1]["tasks"][task["id"]])
+        notes = [c for c in self.db()["comments"] if "relay-retired" in c["body"]]
+        self.assertEqual(len(notes), 1)
+
+    def test_failed_take_of_an_expired_running_task_requeues_it(self):
+        task = self.add()
+        tasks.claim(self.store, "gone", ttl=1, now=time.time() - 60)
+        self.failing_take(self.a, task["id"])
+        after = self.store.read()[1]["tasks"][task["id"]]
+        self.assertEqual((after["status"], after["lease"]), ("queued", None))
+        self.assertEqual(tasks.claim(self.store, "pool")["id"], task["id"])
+
+    def test_pr_attachment_is_idempotent(self):
+        task = self.add()
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        live = self.store.read()[1]["tasks"][task["id"]]
+        self.assertTrue(tasks.attach_pr(self.store, task["id"], live["epoch"], live["pr"], True))
+        self.talk(self.b)._open_pr(live, self.store.read()[1])  # A repeated completion adopts, never closes.
+        self.assertEqual(self.db()["pulls"][str(live["pr"])]["state"], "open")
+        self.assertEqual(self.store.read()[1]["tasks"][task["id"]]["pr"], live["pr"])
+
+    def test_interrupted_close_of_a_stale_pr_is_retried(self):
+        task = self.add()
+        good_gh = config.load(self.b)["gh"]
+        config.update(self.b, gh=["false"])
+        mock(self.b, "finish-fresh", emit=quiet).run(once=True)
+        stale = self.store.read()[1]["tasks"][task["id"]]
+        tasks.retry(self.store, task["id"], worker=config.load(self.a)["worker"], by="alice")
+        mock(self.a, "finish-fresh", emit=quiet).run(once=True)
+        config.update(self.b, gh=good_gh)
+        talk = self.talk(self.b)
+        def outage(number):
+            raise interactive.RelayError("GitHub is down")
+        talk.gh.close_pr = outage
+        talk.flush(stale)  # Bob's late PR is refused and recorded, but the close fails.
+        late = [p for p in self.db()["pulls"].values() if p["head"] == stale["checkpoint"]["branch"]]
+        self.assertEqual([p["state"] for p in late], ["open"])
+        self.talk(self.b).flush(self.store.read()[1]["tasks"][task["id"]])  # GitHub is back.
+        late = [p for p in self.db()["pulls"].values() if p["head"] == stale["checkpoint"]["branch"]]
+        self.assertEqual([p["state"] for p in late], ["closed"])
+
+
+class InteractiveHandoffTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.a, self.b, self.base = setup(self.temp.name)
+        self.store = Store(self.a)
+
+    def hook(self, error="rate_limit"):
+        payload = {"hook_event_name": "StopFailure", "error": error, "cwd": str(self.a)}
+        return interactive.run_hook(stdin=io.StringIO(json.dumps(payload)), emit=quiet)
+
+    def tasks(self):
+        return self.store.read()[1]["tasks"]
+
+    def test_rate_limit_hook_publishes_uncommitted_work_without_touching_checkout(self):
+        (self.a / "answer.py").write_text("def answer():\n    return None\n")
+        (self.a / "README.md").write_text("edited\n")
+        before = (output(self.a, "status", "--porcelain"), output(self.a, "rev-parse", "HEAD"))
+        task = self.hook()
+        self.assertEqual(task["status"], "queued")
+        self.assertEqual((output(self.a, "status", "--porcelain"), output(self.a, "rev-parse", "HEAD")), before)
+        self.assertEqual(sorted(task["checkpoint"]["summary"]["files"]), ["README.md", "answer.py"])
+        self.assertIn("answer.py", task["prompt"])
+        mock(self.b, "finish", emit=quiet).run(once=True)
+        final = self.tasks()[task["id"]]
+        self.assertEqual((final["status"], final["verification"]["result"]), ("review", "passed"))
+
+    def test_other_errors_and_clean_trees_do_nothing(self):
+        (self.a / "answer.py").write_text("x = 1\n")
+        self.assertIsNone(self.hook("overloaded"))
+        (self.a / "answer.py").unlink()
+        self.assertIsNone(self.hook())
+        self.assertEqual(self.tasks(), {})
+
+    def test_repeated_hook_reuses_the_same_task(self):
+        (self.a / "answer.py").write_text("def answer():\n    return None\n")
+        first = self.hook()
+        again = self.hook()
+        self.assertEqual(again["id"], first["id"])
+        (self.a / "notes.txt").write_text("more\n")
+        updated = self.hook()
+        self.assertEqual(updated["id"], first["id"])
+        self.assertEqual(len(self.tasks()), 1)
+        self.assertIn("notes.txt", updated["checkpoint"]["summary"]["files"])
+
+    def test_sensitive_files_block_the_hook(self):
+        (self.a / ".env").write_text("TOKEN=secret\n")
+        self.assertIsNone(self.hook())
+        self.assertEqual(self.tasks(), {})
+        self.assertIn("sensitive filename", (private_dir(self.a) / "hook.log").read_text())
+
+    def test_take_holds_task_and_handoff_returns_it(self):
+        (self.a / "answer.py").write_text("def answer():\n    return None\n")
+        task = self.hook()
+        cfg_b = config.load(self.b)
+        held = interactive.take(self.b, cfg_b, Store(self.b), task["id"], emit=quiet)
+        self.assertEqual(held["status"], "held")
+        self.assertEqual(output(self.b, "symbolic-ref", "--short", "HEAD"), f"relay/{task['id']}")
+        self.assertIn("return None", (self.b / "answer.py").read_text())
+        self.assertIsNone(tasks.claim(self.store, "pool", now=time.time() + 30 * 86400))
+        (self.b / "answer.py").write_text("def answer():\n    return 41  # nearly\n")
+        back = interactive.handoff(self.b, config.load(self.b), Store(self.b), message="off by one left", emit=quiet)
+        self.assertEqual((back["id"], back["status"], back["epoch"]), (task["id"], "queued", 2))
+        self.assertIn("return 41", output(self.b, "show", f"{back['checkpoint']['sha']}:answer.py"))
+        self.assertEqual(back["notes"][-1]["text"], "off by one left")
+        self.assertEqual(config.load(self.b)["held"], {})
+
+    def test_failed_take_returns_the_task_to_the_queue(self):
+        from unittest.mock import patch
+        (self.a / "answer.py").write_text("def answer():\n    return None\n")
+        task = self.hook()
+        real = interactive.git
+        def flaky(repo, *args, **kwargs):
+            if args and args[0] == "switch":
+                raise interactive.RelayError("simulated checkout failure")
+            return real(repo, *args, **kwargs)
+        with patch("agent_relay.interactive.git", side_effect=flaky):
+            with self.assertRaisesRegex(Exception, "checkout failure"):
+                interactive.take(self.b, config.load(self.b), Store(self.b), task["id"], emit=quiet)
+        self.assertEqual(self.tasks()[task["id"]]["status"], "queued")
+        mock(self.b, "error", emit=quiet).run(once=True)
+        self.assertEqual(self.tasks()[task["id"]]["status"], "blocked")
+        with patch("agent_relay.interactive.git", side_effect=flaky):
+            with self.assertRaisesRegex(Exception, "checkout failure"):
+                interactive.take(self.b, config.load(self.b), Store(self.b), task["id"], emit=quiet)
+        self.assertEqual(self.tasks()[task["id"]]["status"], "blocked", "a failed take restores, never requeues")
+
+    def test_hook_publishes_new_work_after_the_previous_task_moved_on(self):
+        (self.a / "answer.py").write_text("def answer():\n    return None\n")
+        first = self.hook()
+        mock(self.b, "finish", emit=quiet).run(once=True)
+        self.assertEqual(self.hook()["id"], first["id"], "same tree: nothing new")
+        (self.a / "other.py").write_text("x = 1\n")
+        second = self.hook()
+        self.assertNotEqual(second["id"], first["id"])
+        self.assertEqual(len(self.tasks()), 2)
+
+    def test_take_refuses_dirty_checkout(self):
+        (self.a / "answer.py").write_text("def answer():\n    return None\n")
+        task = self.hook()
+        (self.b / "scratch.txt").write_text("mine\n")
+        with self.assertRaisesRegex(Exception, "Commit or stash"):
+            interactive.take(self.b, config.load(self.b), Store(self.b), task["id"], emit=quiet)
+
+    def test_hook_install_merges_and_uninstalls(self):
+        settings = self.a / ".claude" / "settings.local.json"
+        settings.parent.mkdir()
+        settings.write_text(json.dumps({"permissions": {"allow": ["Bash(ls)"]}}))
+        interactive.install_hook(self.a)
+        interactive.install_hook(self.a)
+        data = json.loads(settings.read_text())
+        self.assertEqual(data["permissions"], {"allow": ["Bash(ls)"]})
+        self.assertEqual(len(data["hooks"]["StopFailure"]), 1)
+        self.assertEqual(data["hooks"]["StopFailure"][0]["matcher"], "rate_limit")
+        self.assertEqual(output(self.a, "status", "--porcelain"), "")
+        interactive.install_hook(self.a, uninstall=True)
+        self.assertNotIn("StopFailure", json.loads(settings.read_text())["hooks"])
+
+    def test_presence_is_reported(self):
+        mock(self.a, "limit", emit=quiet).run(once=True)
+        workers = self.store.read()[1]["workers"]
+        me = config.load(self.a)["worker"]
+        self.assertEqual(workers[me]["mode"], "offline")
+        self.assertIn("simulated agent", workers[me]["label"])
+
+
+def interactive_prompt(task):
+    from agent_relay.adapters import prompt
+    return prompt(task)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -2,6 +2,7 @@ import json
 import fcntl
 import os
 import tempfile
+import time
 import uuid
 
 from .gitstore import RelayError, private_dir
@@ -28,12 +29,13 @@ def save(repo, config):
             os.unlink(name)
 
 
-def initialize(repo, remote, check):
+def initialize(repo, remote, check, **fields):
     try:
         existing = load(repo)
     except RelayError:
-        existing = {"worker": uuid.uuid4().hex[:12], "mode": "paused"}
-    existing.update(remote=remote, check=check)
+        existing = {"worker": uuid.uuid4().hex[:12], "mode": "paused",
+                    "enrolled_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    existing.update(remote=remote, check=check, **fields)
     save(repo, existing)
     return existing
 

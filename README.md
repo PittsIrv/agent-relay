@@ -1,142 +1,176 @@
 # Agent Relay
 
-**Pass unfinished coding tasks between collaborators' local agents.**
+**Hand unfinished coding work to a collaborator's agent, through GitHub.**
 
-Your agent stops. An available collaborator's agent picks up the latest checkpoint.
-Each person keeps their own machine, CLI login, and control over when they contribute.
+You hit your five-hour limit. Your friend's machine is on and their Claude Code or
+Codex has quota to spare. Agent Relay saves your in-progress work, posts it as a
+GitHub issue, and their agent picks it up, continues from your exact files, and
+opens a draft PR. Nobody shares an account, and nobody has to be awake to say
+"your turn".
 
-**Alpha:** the offline two-clone workflow is tested. Claude Code and Codex adapters
-are experimental; live provider quota exhaustion and multi-device operation have
-not yet been validated. This project does not promise additional subscription capacity.
+![How a handoff moves between two machines through GitHub](docs/assets/relay-flow.svg)
 
-## Small by design
+- **GitHub is the conversation.** Each task is an issue. Claims, handoffs and
+  results are comments in plain English. Finished work is a draft PR. You steer
+  agents by commenting `/relay note …`, `/relay retry …` or `/relay cancel`.
+- **Your limit does not need your model.** A Claude Code `StopFailure` hook and a
+  model-free supervisor checkpoint your work. Nothing waits for an exhausted agent
+  to write a summary.
+- **Consent stays with each owner.** Your agent only works while you run
+  `relay start`. You choose whose requests it takes and how many per day.
+  Accounts, logins and transcripts never leave your machine.
+- **Nothing merges on its own.** Every attempt is an unvalidated checkpoint on its
+  own branch; a person reviews the PR.
+- **Small.** macOS or Linux, Python 3.11+, Git and the `gh` CLI. No server, no
+  database, no Python dependencies.
 
-- **No runtime Python dependencies.** Python 3.11+, Git, macOS or Linux.
-- **No hosted coordinator, database, API key, or Relay account required.** A shared
-  Git remote holds task state and checkpoint branches.
-- **Use your existing coding CLI.** Sign in through Claude Code or Codex itself.
-- **One foreground worker per clone.** Stop it or pause it whenever you want.
-- **No automatic merges.** Finished attempts are marked for human review.
+> **Status: alpha (v0.2).** The two-clone workflow is tested end to end, and a live
+> run used real Codex as the successor. Real provider usage-limit events and
+> multi-device operation over GitHub have not yet been observed in the field. See
+> [validation](docs/validation.md).
 
-## Try it without a model
+## What it looks like on GitHub
 
-Install with [pipx](https://pipx.pypa.io/stable/installation/) or `uv tool install`:
+From a live run: Alice's interactive session stopped mid-task; Bob's Codex
+continued it. (The GitHub side of this run was simulated offline; the agent was real.)
+
+> **Issue #1: Implement mean() and median() in stats.py so tests/test_stats.py passes**
+>
+> **alice** · ⏸ **alice's Claude Code session** stopped: usage limit reached.
+> Work saved at `053870e` on `relay/checkpoints/c177de5c84/1` (2 files changed, 4 insertions(+), 1 deletion(-)).
+> Touched: `.relay-handoff.md`, `stats.py`. Up for grabs: the next available agent continues from this checkpoint.
+>
+> **bob** · 🤖 **bob's codex** picked this up (attempt 2), starting from the latest checkpoint `053870e`.
+>
+> **bob** · ✅ **bob's codex** finished attempt 2. Local check: **passed**. Draft PR #2 is open for review.
+> Nothing was merged. A person reviews and merges the PR.
+
+## Try it in 30 seconds (no model, no network)
 
 ```sh
 pipx install 'git+https://github.com/PittsIrv/agent-relay.git'
 relay demo
 ```
 
-The demo creates a temporary bare Git remote and two independent clones. A fake
-agent leaves unfinished code and reports a usage limit. The second worker fetches
-that checkpoint, finishes it, and passes a check. Everything is local; the demo
-does not call a model or access your GitHub account.
+The demo builds a throwaway remote with two clones and a simulated GitHub, cuts
+off "Alice" mid-edit with a usage-limit hook, lets "Bob's" agent finish, opens the
+PR, merges it, and prints the issue thread above. From a checkout:
+`PYTHONPATH=src python3 -m agent_relay demo`.
 
-For a source checkout:
+## Set up with a friend
 
-```sh
-PYTHONPATH=src python3 -m agent_relay demo
-```
-
-## Use with a collaborator
-
-Both people need a clone of the **same trusted repository**, Git push access, a
-configured Git author, and an installed, authenticated coding CLI. Keep clocks
-synchronized. The repository needs at least one pushed commit.
-
-In each person's clone:
-
-```sh
-relay init
-```
-
-One person publishes a task, then each available person starts a worker:
-
-```sh
-relay add 'Fix the pagination bug and add a regression test'
-relay start --agent codex
-# Or: relay start --agent claude
-```
-
-`start` is explicit consent to pick up queued tasks in this repository. It stays
-in the foreground; leave the terminal open. It does not change the CLI's login
-or enable permission-bypass flags. If a task needs tools your CLI policy denies,
-it can fail or produce incomplete work. Review and configure permissions locally.
-
-In another terminal:
-
-```sh
-relay status
-relay pause              # reserve this clone's worker; checkpoint and release its task
-relay resume             # let an already-running worker accept tasks again
-relay show TASK_ID       # inspect the handoff history and checkpoint branch
-relay retry TASK_ID      # requeue a blocked or review task after inspecting it
-```
-
-Ctrl-C gracefully checkpoints and releases current work. `start --once` attempts
-at most one task. `pause` controls only this clone, not all sessions using the same
-subscription. Interactive sessions are **not automatically detected** in this alpha.
-
-Configure a local verification command if your project has one:
+Both of you: a clone of the same repository, push access, `gh auth login`, and a
+signed-in `claude` or `codex`. Then, in each clone:
 
 ```sh
 relay init --check 'python -m unittest discover -s tests'
 ```
 
-Commands are parsed into arguments and run without a shell. Shell operators such
-as `&&` are not supported; use a checked-in script if needed. Each collaborator
-chooses their own check locally. A passing check is recorded with its input commit,
-but is not a substitute for review. Test failures still enter `review` with the
-failed result visible. No configured check means **unverified**, not success.
+`init` enrolls the clone **paused**, creates the `relay` label, and records your
+local check command (run without a shell, only on your machine).
 
-## What happens on interruption?
-
-1. A worker atomically claims a task on `relay/state`.
-2. It creates an isolated, detached worktree from the task's remote base or checkpoint.
-3. Its supervisor periodically pauses the process group and snapshots files without
-   requesting an LLM response. Snapshots may contain incomplete application writes.
-4. It publishes an unvalidated checkpoint to an attempt-specific branch, then
-   records that exact SHA in shared state.
-5. A recognized structured usage-limit error requeues the task and puts that local
-   worker into a conservative cooldown. Another enrolled worker can claim it.
-6. A normally completed attempt goes to `review`; the base branch stays unchanged.
-
-Default checkpoint interval: 120 seconds. Lease: 300 seconds; heartbeat: 60 seconds.
-Default cooldown: 30 minutes; maximum agent session: one hour. A cooldown is a
-backoff policy, **not a claim about the provider's reset time**. Unknown errors
-block the task for inspection instead of repeatedly launching agents.
+### Lend your agent
 
 ```sh
-relay start --agent codex --checkpoint-seconds 120 --cooldown-seconds 1800
+relay start --agent codex                       # or: --agent claude --model sonnet
+relay start --agent claude --accept-from alice --max-tasks-per-day 3
 ```
 
-Abrupt host loss can lose edits since the last **successfully published** checkpoint.
-Git outages stop the attempt; local work and recovery coordinates remain under
-`.git/agent-relay/attempts/`. A successor only receives the last advertised remote
-checkpoint. There is no transparent migration of private model reasoning or sessions.
+`start` is your consent. It runs in the foreground; Ctrl-C checkpoints and hands
+back whatever it was doing. `relay pause` and `relay resume` work from another
+terminal. Your agent runs with your normal CLI permissions; Relay never enables
+permission-bypass flags.
 
-## Privacy and trust
+### Ask for help
 
-Task prompts, code snapshots, optional `.relay-handoff.md`, Git author metadata and
-coordination events are shared through the remote. They are public if the remote
-is public. Provider logs, local verification commands and authentication stay local.
+Any of these puts work in front of your collaborators' agents:
 
-An initial checkpoint guard blocks common credential filenames/patterns, symlinks,
-submodules and oversized snapshots. **It is a heuristic, not a guarantee that code
-contains no secrets.** Use a repository suitable for sharing, Git ignores, and your
-normal secret scanning. Repositories containing `.env.example` also hit the
-conservative filename guard in this alpha. Blocked files remain local for inspection.
-Common generated directories (`__pycache__`, `.venv`, `node_modules`, `.pytest_cache`)
-are excluded from staging; add project-specific generated files to `.gitignore`.
+| From | How |
+|---|---|
+| GitHub | Open an issue, add the `relay` label. Assign it to a friend to ask *their* agent specifically. |
+| Terminal | `relay add 'Fix the pagination bug and add a regression test'` (add `--for bob`, `--after TASK`) |
+| Your own session | `relay handoff 'median() still missing; empty input must raise'` publishes your uncommitted work |
+| Automatically | `relay hook install` adds a Claude Code hook: when your session hits a usage limit, your work is handed off for you |
 
-This is for trusted collaborators. Git write access is the coordination trust
-boundary; any collaborator can alter queue state. Lease checks fence cooperative
-supervisors' metadata updates, not arbitrary commands an agent can execute. Use
-your provider's sandbox and a dedicated development environment as appropriate.
+Only issues opened by people with write access are imported, and only their
+`/relay` comments are obeyed.
 
-Provider subscriptions retain their own terms and limits. Relay does not collect
-tokens, proxy model requests or bypass limits. Cross-owner consumer-plan automation
-needs provider-specific validation; local authentication alone does not settle it.
+### Get it back
+
+```sh
+relay status            # who is online, what they accept, every task
+relay show TASK         # timeline, notes, checkpoint, how to review the diff
+relay take TASK         # hold a task and check out its latest checkpoint on relay/TASK
+relay handoff --review  # done interactively: publish and open the PR
+```
+
+When the PR is merged, the task is `done` and anything queued `--after` it starts
+from the updated base branch.
+
+## How it works
+
+```text
+queued ──claim──> running ──finish──> review ──PR merged──> done
+   ^                 │
+   └── usage limit, owner pause, Ctrl-C (checkpoint first)
+held: a person took it (relay take); agents skip it until relay handoff
+blocked: unknown failure; a human retries with guidance
+```
+
+- **Coordination** lives on one branch, `relay/state`, as a JSON document. Every
+  change is a compare-and-swap push (`--force-with-lease` on the exact parent),
+  so two agents can never both own a task. GitHub issues cannot do that, so they
+  mirror the state instead of holding it.
+- **Leases and epochs.** Each claim increments an epoch; a stale or partitioned
+  worker cannot overwrite its successor's state.
+- **Checkpoints** are made by the supervisor, not the model: it freezes the agent's
+  process group, stages into a temporary index, scans for credentials, commits and
+  pushes to `relay/checkpoints/<task>/<attempt>`. Your index, HEAD and branch are
+  never touched.
+- **The successor** starts from the latest checkpoint and gets the task, a
+  supervisor-recorded history (who, why it stopped, what changed), collaborator
+  notes and `.relay-handoff.md`. No hidden model state is transferred, because
+  none can be.
+
+Details and failure analysis: [architecture](docs/architecture.md) ·
+[decisions](docs/decisions/) · [validation](docs/validation.md).
+
+## What it does not do
+
+- It does not share, proxy or pool accounts. Each agent runs under its owner's
+  login on its owner's machine. Provider terms still apply to each subscription;
+  check them for your plan.
+- It does not detect that you are working interactively. Use `relay pause` or
+  `relay take`.
+- The credential scan is a heuristic. Use it on repositories you are willing to
+  share with your collaborators, with your normal secret scanning.
+- Git write access is the trust boundary. Collaborators can edit the queue; leases
+  fence cooperative workers, not malicious ones.
+- If a laptop dies, work since its last pushed checkpoint (default every two
+  minutes) is lost until it comes back.
+- Leases use wall-clock time; keep clocks synchronized. `relay/state` gains a
+  commit per heartbeat and checkpoint branches accumulate; there is no pruning yet.
+- Sized for small groups: GitHub sync reads at most 2,000 comments or labelled
+  issues per call. Beyond that, commands in the overflow can be missed and issues
+  past the cap are not imported; duplicate checks defer rather than guess.
+- Alpha: everyone on a repository should run the same Relay version.
+- Windows is not supported (workers freeze and stop agents with POSIX process groups).
+
+## Commands
+
+| Command | Purpose |
+|---|---|
+| `relay init [--check CMD] [--no-github]` | Enroll this clone (paused) |
+| `relay start --agent codex\|claude [--model M] [--accept-from A,B] [--max-tasks-per-day N] [--once]` | Lend your agent; foreground |
+| `relay pause` / `relay resume` | Reserve or release your worker |
+| `relay add TEXT [--for LOGIN] [--after TASK] [--base BRANCH]` | Queue a task (`--after` tasks should target the branch their dependencies merge into) |
+| `relay handoff [TEXT] [--review]` | Publish your in-progress work |
+| `relay take TASK` | Hold a task and check it out locally |
+| `relay hook install [--share-prompt]` / `uninstall` | Claude Code usage-limit hook |
+| `relay status [--json]` / `relay show TASK [--json]` | Board and timeline |
+| `relay note TASK TEXT` / `retry TASK [TEXT]` / `cancel TASK` | Steer from the terminal |
+| `relay sync` | Import labelled issues, apply `/relay` comments, mark merged PRs done (workers do this every minute) |
+| `relay doctor` / `relay demo` | Prerequisites / offline demo |
 
 ## Development
 
@@ -146,6 +180,6 @@ python3 -m venv .venv
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-The tests use real Git remotes and subprocesses, but fake coding agents. See
-[architecture](docs/architecture.md), [validation](docs/validation.md), and
-[contributing](CONTRIBUTING.md). Apache-2.0 licensed.
+Tests use real Git remotes, real child processes, fake agents and an offline
+`gh` stand-in; they never call a model or GitHub. See [contributing](CONTRIBUTING.md).
+Apache-2.0.

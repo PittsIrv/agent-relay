@@ -107,6 +107,17 @@ class RelayTests(unittest.TestCase):
         self.assertEqual(adapters.failure_kind("unexpected failure", 1), "error")
         self.assertEqual(adapters.failure_kind('{"type":"result","is_error":true,"result":"You have hit your limit"}', 0), "quota")
 
+    def test_real_claude_auth_failure_shape(self):
+        # Sanitized from a live Claude Code 2.1.132 stream-json run with an expired login.
+        log = "\n".join([
+            '{"type":"assistant","message":{"content":[{"type":"text","text":"Failed to authenticate."}]},"error":"authentication_failed"}',
+            '{"type":"result","subtype":"success","is_error":true,"api_error_status":401,"result":"Failed to authenticate."}',
+        ])
+        self.assertEqual(adapters.failure_kind(log, 1), "error")
+        self.assertEqual(adapters.failure_detail(log), "authentication_failed (HTTP 401)")
+        limit = '{"type":"assistant","error":"rate_limit"}\n{"type":"result","is_error":true,"api_error_status":429}'
+        self.assertEqual(adapters.failure_kind(limit, 1), "quota")
+
     def test_failed_push_retains_local_recovery_without_advertising_it(self):
         with patch("agent_relay.worker.publish", side_effect=RelayError("simulated network outage")):
             with self.assertRaisesRegex(RelayError, "network outage"):
