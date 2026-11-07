@@ -10,3 +10,6 @@ history rewrite, public post) is left to the owner with exact commands at the en
 - README clone step: the README now gives `gh repo clone OWNER/REPO && cd REPO`, and the
   first-run test runs that command (OWNER/REPO filled in) instead of cloning on its own.
 - Review (Gemini, middle tier): ship with fixes; suggests hardcoding the clone in the test instead of scraping the README. Disagree: the point of the test is that the README's own command works; a README edit that breaks the scrape fails the run loudly, which is the intended signal.
+- Release notes: `docs/release-notes-v0.3.0.md` is the text for the GitHub release (used by
+  `gh release create --notes-file`). A rendered page for the owner was published separately.
+  No tag or release was created.
