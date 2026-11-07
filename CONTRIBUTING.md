@@ -4,6 +4,17 @@ Keep the two-person setup short: Python standard library, Git and `gh`. Prefer s
 interfaces over required infrastructure. Changes should preserve local ownership,
 isolated attempts, recoverable work and explicit review before integration.
 
+To run the tests from a checkout on macOS or Linux (about nine minutes; they use real Git and
+child processes):
+
+```sh
+python3 -m venv .venv && .venv/bin/pip install -e . && .venv/bin/python -m unittest discover -s tests -v
+```
+
+The opt-in GitHub scenarios (`scripts/e2e_github.py`, `scripts/first_run_test.py`) need
+`RELAY_E2E_REPO=owner/scratch-repo`, a private repository you own whose name contains
+sandbox, scratch, e2e or test; see the README's Development section.
+
 Run `PYTHONPATH=src python3 -m unittest discover -s tests -v` and
 `PYTHONPATH=src python3 -m agent_relay demo` from a checkout. Add failure-oriented
 tests for coordination changes. Do not call paid models or GitHub in the default test suite;

@@ -1,5 +1,14 @@
 # What's new
 
+## 2026-11-07 · v0.3: proven over real GitHub
+
+**Try:** follow the README from `pipx install …` (or the venv line) to `relay take` and
+`relay handoff` in a fresh clone; it takes about a minute.
+
+**You get:** the handoff scenarios (take, hand back, supersede, cancel, usage-limit) are
+checked over real GitHub between two clones; cancelling a reviewed task closes its PR; the
+README and error messages guide a first-time user.
+
 ## 2026-11-06 · v0.2: hand work to a friend's agent through GitHub
 
 **Try:** `relay demo`, then read the issue thread it prints. In a real repo:
