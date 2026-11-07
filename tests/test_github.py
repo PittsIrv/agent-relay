@@ -1,4 +1,5 @@
 import concurrent.futures
+import fcntl
 import sys
 import io
 import json
@@ -23,13 +24,22 @@ class GitHubConversationTests(unittest.TestCase):
         self.a, self.b, self.base = setup(self.root, github=True)
         self.store = Store(self.a)
 
-    def db(self):
-        return json.loads((self.root / "github.json").read_text())
+    def edit_db(self, change=None):
+        """Read-modify-write under the same lock the fake gh holds, so a running worker's
+        narration cannot overwrite (or half-write) what the test changes."""
+        with (self.root / "github.json").open("a+") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            handle.seek(0)
+            db = json.loads(handle.read())
+            if change:
+                change(db)
+                handle.seek(0)
+                handle.truncate()
+                json.dump(db, handle)
+            return db
 
-    def edit_db(self, change):
-        db = self.db()
-        change(db)
-        (self.root / "github.json").write_text(json.dumps(db))
+    def db(self):
+        return self.edit_db()
 
     def talk(self, repo):
         return Conversation(repo, config.load(repo), Store(repo), quiet)
