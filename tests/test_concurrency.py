@@ -125,8 +125,12 @@ class TwoWorkersWithSlowGitHub(unittest.TestCase):
             future.result(timeout=120)
         task = self.store.read()[1]["tasks"][task_id]
         pulls = self.db()["pulls"]
-        if task["status"] == "cancelled":
-            self.assertFalse([p for p in pulls.values() if p["state"] == "open"], "a cancelled task must not leave a live PR")
+        # Cancelling a task that already reached review leaves its recorded PR for a person to
+        # close or merge, so a cancelled task may own one open PR. What must never happen is an
+        # open PR the task does not record (an orphan) or more than one.
+        open_pulls = {int(n) for n, p in pulls.items() if p["state"] == "open"}
+        self.assertLessEqual(open_pulls, {task["pr"]} if task.get("pr") else set(), f"orphan PR {open_pulls}")
+        if task["status"] == "review":
+            self.assertEqual(open_pulls, {task["pr"]})
         else:
-            self.assertEqual(task["status"], "review")
-            self.assertEqual(len([p for p in pulls.values() if p["state"] == "open"]), 1)
+            self.assertEqual(task["status"], "cancelled")
