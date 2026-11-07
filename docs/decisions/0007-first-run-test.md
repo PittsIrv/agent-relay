@@ -29,3 +29,6 @@ Verdict: ship with fixes. Action taken: the first two.
 ## Gaps found, each fixed in its own PR
 
 (listed below as they are found)
+
+- Script: commands are read in document order (code blocks and inline `relay …` spans interleaved). An early version scanned code blocks first and ran `handoff --review` where the README's first mention is the plain hand back.
+- Review of this change (Gemini, middle tier): ship with fixes; regex parsing of Markdown is fragile (inline spans in prose, multi-line commands). Acknowledged, not changed: a wrong pick fails the run loudly, and the README's commands are single-line by convention.
