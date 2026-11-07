@@ -14,7 +14,7 @@ from .worker import Worker
 CHECK = [sys.executable, "-c", "from answer import answer; assert answer() == 42"]
 
 
-def setup(root, github=False):
+def setup(root, github=False, latency=0):
     """Bare remote plus two independent clones. With github=True, a fake `gh` records the conversation."""
     root = Path(root)
     remote, a, b = [root / name for name in ("shared.git", "alice", "bob")]
@@ -38,7 +38,7 @@ def setup(root, github=False):
         extra = {}
         if github:
             extra = {"github": "demo/shared", "owner": owner, "default_branch": "main",
-                     "gh": ["env", f"FAKE_GH_STATE={fake}", f"FAKE_GH_LOGIN={owner}",
+                     "gh": ["env", f"FAKE_GH_STATE={fake}", f"FAKE_GH_LOGIN={owner}", f"FAKE_GH_LATENCY={latency}",
                             sys.executable, str(Path(__file__).with_name("fake_gh.py"))]}
         cfg = config.initialize(repo, "origin", CHECK, **extra)
         cfg["mode"] = "pooled"
