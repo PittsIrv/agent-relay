@@ -44,13 +44,12 @@ STEPS = []
 
 
 def readme_commands():
-    """Every command in the README: lines of its sh code blocks (trailing comments dropped) and
+    """Every command in the README: lines of its sh code blocks and
     inline code spans that start with `relay `, in document order."""
     lines = []
     for block in re.findall(r"```sh\n(.*?)```", README, re.S):
         for line in block.splitlines():
-            line = re.sub(r"\s+#\s.*$", "", line).rstrip()
-            if line.strip():
+            if line.strip() and not line.lstrip().startswith("#"):  # sh itself ignores trailing comments
                 lines.append(line.strip())
     for span in re.findall(r"`(relay [^`]+)`", README):
         lines.append(span.strip())
@@ -66,7 +65,7 @@ def find(prefix):
 
 def step(label, command, cwd, env, expect_ok=True):
     started = time.monotonic()
-    run = subprocess.run(command, shell=True, cwd=cwd, env=env, capture_output=True, text=True, timeout=600)
+    run = subprocess.run(command, shell=True, cwd=cwd, env=env, capture_output=True, text=True, timeout=180)
     took = time.monotonic() - started
     out = (run.stdout + run.stderr).strip()
     ok = (run.returncode == 0) == expect_ok
