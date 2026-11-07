@@ -5,6 +5,7 @@ State lives in the JSON file named by FAKE_GH_STATE; the acting login is FAKE_GH
 import fcntl
 import json
 import os
+import random
 import re
 import sys
 import time
@@ -43,6 +44,8 @@ def main(argv):
     url = urlsplit(path)
     query = {k: v[0] for k, v in parse_qs(url.query).items()}
     login = os.environ.get("FAKE_GH_LOGIN", "octo")
+    # Network latency is spent before the state lock, as a real round trip would be.
+    time.sleep(random.uniform(0, float(os.environ.get("FAKE_GH_LATENCY", "0"))))
     with open(os.environ["FAKE_GH_STATE"], "a+") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
         db = load(handle)
