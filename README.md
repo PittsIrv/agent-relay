@@ -182,4 +182,16 @@ python3 -m venv .venv
 
 Tests use real Git remotes, real child processes, fake agents and an offline
 `gh` stand-in; they never call a model or GitHub. See [contributing](CONTRIBUTING.md).
+
+To run the handoff scenarios over real GitHub (take, hand back, supersede, cancel,
+usage-limit handoff) between two clones, point the script at a private scratch
+repository you own (its name must contain sandbox, scratch, e2e or test; the script closes
+the issues and PRs Relay opened there and deletes its `relay/*` branches):
+
+```sh
+RELAY_E2E_REPO=you/scratch .venv/bin/python scripts/e2e_github.py
+```
+
+Both clones use your one `gh` login, so scenarios that need two GitHub accounts stay in
+the offline suite. It uses mock agents (no model calls) and closes everything it opened.
 Apache-2.0.

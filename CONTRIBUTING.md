@@ -7,7 +7,8 @@ isolated attempts, recoverable work and explicit review before integration.
 Run `PYTHONPATH=src python3 -m unittest discover -s tests -v` and
 `PYTHONPATH=src python3 -m agent_relay demo` from a checkout. Add failure-oriented
 tests for coordination changes. Do not call paid models or GitHub in the default test suite;
-use the mock agent and `agent_relay/fake_gh.py`. Record design choices in
+use the mock agent and `agent_relay/fake_gh.py`. `scripts/e2e_github.py` is the opt-in
+exception: it needs `RELAY_E2E_REPO` set to a private scratch repository. Record design choices in
 `docs/decisions/`.
 
 Open an issue with a reproducible scenario before adding a dashboard, scheduler
