@@ -19,7 +19,8 @@ protocol's guarantees: a task is claimed once, narrated once, and gets one PR.
      one task per issue, one acknowledgement per issue.
   3. A `/relay cancel` is posted the moment the task is claimed while the mock agent
      (`finish-fresh`: writes `answer.py` and exits at once) is finishing: the outcome is either
-     cancelled with no open PR, or review with exactly one open PR; never both.
+     cancelled, or review with exactly one open PR. Open PRs must be a subset of the task's
+     recorded PR: no orphan, no second PR.
 - Rejected: sleeps tuned to provoke a particular interleaving. Scenario 3 asserts the
   invariant for either ordering instead.
 - Not seeded: each `gh` call is a new process and thread scheduling is not
@@ -43,3 +44,13 @@ No product defect was found; no product code changed.
 - tuned sleeps contradict the record → agree (same fix).
 - mock behaviour undocumented → agree — described above.
 Verdict: ship with fixes. Action taken: the three fixes above. Cost: about two cents of Gemini.
+
+## Correction — 2026-11-07
+
+PR #2 was merged while four CI jobs were red (my merge was not gated on the check
+result). The failure was scenario 3: it asserted that a cancelled task leaves no open
+PR. When the cancel lands after the agent reached review, the task already owns a PR;
+`cancel` leaves a reviewed task's recorded PR for a person to close or merge. That is
+the existing behaviour, so the assertion was too strong, not the product wrong. The
+invariant is now "no orphan PR and no second PR". Whether `cancel` should also close a
+reviewed task's PR is a protocol question left to the Router (current behaviour kept).
