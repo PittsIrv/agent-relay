@@ -54,3 +54,15 @@ PR. When the cancel lands after the agent reached review, the task already owns 
 the existing behaviour, so the assertion was too strong, not the product wrong. The
 invariant is now "no orphan PR and no second PR". Whether `cancel` should also close a
 reviewed task's PR is a protocol question left to the Router (current behaviour kept).
+
+## Incident: PR #2 merged with red CI — 2026-11-07
+
+What happened: I merged PR #2 while four CI jobs (ubuntu 3.12, macOS 3.11-3.13) were failing.
+The merge ran right after a status listing in one shell command, without checking its result.
+Cause: the merge was not conditional on CI. The red check itself was my scenario-3 assertion
+being too strong (see Correction above); PR #3 fixed it and was merged on 12/12 green.
+Review: PR #2 had its Gemini review before merge; PR #3 (test-only) had none and is reviewed
+with the cancel change that follows.
+Gate now in place (Router, 2026-11-07): merge only as one chained command,
+`gh pr checks <n> --watch --fail-fast && gh pr merge <n> --squash --delete-branch`, and only
+when the outside review has no "do not ship".

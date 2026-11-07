@@ -295,6 +295,14 @@ def add_note(store, task_id, text, worker=None, by=None):
     return store.change(mutate)
 
 
+def may_cancel_reviewed(task, worker, by):
+    """Once a task has a PR in review, only the identity that asked for it may cancel it."""
+    owner = task.get("requested_by")
+    if owner:
+        return (by or "").lower() == owner.lower()
+    return worker == task.get("created_by")  # No recorded requester: the clone that created it.
+
+
 def cancel(store, task_id, worker=None, by=None):
     def mutate(state):
         task = state["tasks"].get(task_id)
@@ -302,9 +310,12 @@ def cancel(store, task_id, worker=None, by=None):
             raise RelayError("Unknown task")
         if task["status"] in ("done", "cancelled"):
             return None
+        reviewed = task["status"] == "review"
+        if reviewed and not may_cancel_reviewed(task, worker, by):
+            raise RelayError(f"Only {task.get('requested_by') or 'the task owner'} can cancel a task that has reached review")
         task["status"] = "cancelled"
         task["lease"] = None  # A running attempt loses its lease and stops at its next renewal.
-        event(task, "cancelled", worker=worker, by=by)
+        event(task, "cancelled", worker=worker, by=by, cancel_pr=task.get("pr") if reviewed else None)
         return task_id
     return store.change(mutate)
 
@@ -347,9 +358,12 @@ def command(store, comment_id, task_id, verb, text, worker, by):
             event(task, "retried", worker=worker, by=by, note=text, via="github", retired_pr=old)
             return "requeued"
         if verb == "cancel" and task["status"] not in ("done", "cancelled"):
+            reviewed = task["status"] == "review"
+            if reviewed and not may_cancel_reviewed(task, worker, by):
+                return "refused"
             task["status"] = "cancelled"
             task["lease"] = None
-            event(task, "cancelled", worker=worker, by=by, via="github")
+            event(task, "cancelled", worker=worker, by=by, via="github", cancel_pr=task.get("pr") if reviewed else None)
             return "cancelled"
         return "ignored"
     return store.change(mutate)
