@@ -52,6 +52,14 @@ pipx install 'git+https://github.com/PittsIrv/agent-relay.git'
 relay demo
 ```
 
+No `pipx`? Use a virtual environment (Python 3.11+ and Git are all it needs):
+
+```sh
+python3 -m venv ~/.relay && ~/.relay/bin/pip install 'git+https://github.com/PittsIrv/agent-relay.git'
+export PATH="$HOME/.relay/bin:$PATH"   # add this line to your shell profile to keep it
+relay demo
+```
+
 The demo builds a throwaway remote with two clones and a simulated GitHub, cuts
 off "Alice" mid-edit with a usage-limit hook, lets "Bob's" agent finish, opens the
 PR, merges it, and prints the issue thread above. From a checkout:

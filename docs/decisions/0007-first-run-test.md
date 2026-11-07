@@ -39,3 +39,5 @@ Verdict: ship with fixes. Action taken: the first two.
   now names the command to run next. One PR for all of them: they are the same change (message text) and
   share one test file, `tests/test_first_run_errors.py`, which drives the CLI the way a new user does.
 - Review of the error messages (Gemini, middle tier): ship with fixes. Blanket rewrap of every `rev-parse` failure → agree, now only when git says "not a git repository". The `gh auth login` hint was unconditional → agree, reworded to apply only if the repository is on github.com. Move the advice into the CLI layer with typed exceptions → disagree: one entry point, one tool; the strings live next to the raises, which keeps them from drifting.
+- Gap 1 (README): the only install command was `pipx install …`; a machine without pipx had no path. The README now gives a venv alternative (Python 3.11+ and Git only). With it the first-run path takes under a minute of commands.
+- Review of the README install fix (Gemini, middle tier): ship with fixes. Windows `Scripts` path → disagree: the README states macOS or Linux only. Regex-parsing points repeat the earlier review (acknowledged).
