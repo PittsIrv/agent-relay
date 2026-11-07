@@ -44,15 +44,14 @@ STEPS = []
 
 
 def readme_commands():
-    """Every command in the README: lines of its sh code blocks and
-    inline code spans that start with `relay `, in document order."""
+    """Every command in the README, in document order: lines of sh code blocks and inline code
+    spans that start with `relay `."""
     lines = []
-    for block in re.findall(r"```sh\n(.*?)```", README, re.S):
-        for line in block.splitlines():
-            if line.strip() and not line.lstrip().startswith("#"):  # sh itself ignores trailing comments
-                lines.append(line.strip())
-    for span in re.findall(r"`(relay [^`]+)`", README):
-        lines.append(span.strip())
+    for match in re.finditer(r"```sh\n(.*?)```|`(relay [^`]+)`", README, re.S):
+        if match[1] is not None:
+            lines += [x.strip() for x in match[1].splitlines() if x.strip() and not x.lstrip().startswith("#")]
+        else:
+            lines.append(match[2].strip())
     return lines
 
 
