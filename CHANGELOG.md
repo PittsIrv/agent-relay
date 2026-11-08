@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- `relay doctor` checks what a first handoff needs, one line per check with a fix for each problem:
+  platform, Python, Git version and identity, repository, enrollment, remote access, `gh` installed
+  and signed in, push access, `relay/state` readable, agent CLIs, the usage-limit hook, clock skew
+  against GitHub and a dirty working tree. Exit code 1 on any failure; `--json` for scripts. It never
+  prints a token or a credentialed URL.
+
 ## 0.3.0 (alpha)
 
 Proven over real GitHub, and easier for a stranger to start.
