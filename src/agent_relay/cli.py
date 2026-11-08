@@ -64,7 +64,8 @@ def parser():
     cancel = sub.add_parser("cancel", help="Cancel a task; a running agent stops at its next heartbeat, a reviewed task's PR is closed (owner only)")
     cancel.add_argument("task")
     sub.add_parser("sync", help="Import labelled issues, apply /relay comments, mark merged PRs done")
-    sub.add_parser("doctor", help="Check prerequisites without launching an agent")
+    doctor = sub.add_parser("doctor", help="Check everything a first handoff needs and say how to fix each problem")
+    doctor.add_argument("--json", action="store_true", help="Machine-readable output")
     sub.add_parser("demo", help="Run an offline, two-clone handoff with fake agents; no model usage")
     return app
 
@@ -126,11 +127,10 @@ def main(argv=None):
             run()
             return
         if args.action == "doctor":
-            print(f"Agent Relay {__version__} | Python {sys.version.split()[0]} | {sys.platform}")
-            for program in ("git", "gh", "codex", "claude"):
-                print(f"{program}: {shutil.which(program) or 'not installed'}")
-            print("macOS/Linux supported. Authentication and real provider handoffs are not tested by doctor.")
-            return
+            from . import doctor
+            report = doctor.check()
+            print(doctor.render(report, as_json=args.json))
+            sys.exit(1 if report.failed() else 0)
         repo = repository()
         if args.action == "init":
             Store(repo, args.remote)

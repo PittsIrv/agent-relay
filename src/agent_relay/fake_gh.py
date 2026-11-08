@@ -70,6 +70,9 @@ def route(db, method, path, query, body, login):
     if not match:
         return 404, "Not Found"
     slug, sub = match[1], match[2] or ""
+    if sub == "" and method == "GET":
+        mine = db["permissions"].get(login, "read") in ("write", "maintain", "admin")
+        return 200, {"full_name": slug, "private": True, "permissions": {"push": mine}}
     if sub == "/labels" and method == "POST":
         if body["name"] in db["labels"]:
             return 422, "already_exists"

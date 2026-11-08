@@ -253,7 +253,7 @@ Details and failure analysis: [architecture](docs/architecture.md) ·
 | `relay status [--json]` / `relay show TASK [--json]` | Board and timeline |
 | `relay note TASK TEXT` / `retry TASK [TEXT]` / `cancel TASK` | Steer from the terminal. Cancelling a task that has reached review closes its PR (branch kept; reopen to undo) and is allowed only to the person who requested it |
 | `relay sync` | Import labelled issues, apply `/relay` comments, mark merged PRs done (workers do this every minute) |
-| `relay doctor` / `relay demo` | Prerequisites / offline demo |
+| `relay doctor` / `relay demo` | Check your setup and get a fix for each problem (`--json` for scripts) / offline demo |
 
 ## Development
 
