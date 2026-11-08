@@ -1,5 +1,12 @@
 # What's new
 
+## 2026-11-07 · See the handoff before you install
+
+**Try:** open the README; the demo at the top plays the whole handoff, and the text of it is right under.
+
+**You get:** a 25-second picture of what Relay does (Alice hits a limit, Bob's agent finishes, a draft PR
+opens) without installing anything, and a `relay doctor` step in the setup that checks your machine.
+
 ## 2026-11-07 · `relay doctor`
 
 **Try:** in a clone, run `relay doctor`.

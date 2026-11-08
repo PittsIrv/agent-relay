@@ -145,13 +145,15 @@ def first_run(slug, work, env):
     step("gh is signed in", "gh auth status", project, env)
 
     init = need("enroll the clone", "relay init")
+    doctor = need("check the setup", "relay doctor")
     add = need("ask for help from the terminal", "relay add")
     status = need("find the task id", "relay status")
     take = need("take the task", "relay take")
     handoff = need("hand back", "relay handoff")
-    if not all((init, add, status, take, handoff)):
+    if not all((init, doctor, add, status, take, handoff)):
         return
     step("relay init", init, project, env)
+    step("relay doctor (no failures after init)", doctor, project, env)
     code, out = step("relay add", add, project, env)
     code, out = step("relay status", status, project, env)
     found = re.search(r"^\s+([0-9a-f]{10})\s+queued", out, re.M)
