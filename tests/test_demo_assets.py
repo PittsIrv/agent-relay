@@ -1,3 +1,4 @@
+import importlib.util
 import re
 import unittest
 import xml.dom.minidom
@@ -5,7 +6,10 @@ from xml.sax.saxutils import escape
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-LOCAL = (r"/Users/", r"/home/\w", r"/var/folders", r"/private/", r"/tmp/", r"[A-Za-z]:\\", r"@[a-z0-9-]+\.(com|edu|org|net)")
+_spec = importlib.util.spec_from_file_location("make_demo_svg", ROOT / "scripts" / "make_demo_svg.py")
+generator = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(generator)
+LOCAL = generator.LOCAL  # The test enforces exactly what the generator enforces.
 
 
 class DemoAssetTests(unittest.TestCase):
@@ -23,11 +27,11 @@ class DemoAssetTests(unittest.TestCase):
         svg = (ROOT / "docs" / "assets" / "relay-demo.svg").read_text()
         readme = (ROOT / "README.md").read_text()
         self.assertIn("docs/assets/relay-demo.svg", readme)
-        self.assertIn(transcript.strip(), readme)
+        self.assertIn(transcript.strip(), readme, "stale: run `python scripts/make_demo_svg.py` and commit the result")
         for pattern in LOCAL:
             self.assertIsNone(re.search(pattern, transcript), pattern)
         for line in transcript.splitlines():
-            if line.strip() and "`" not in line:
+            if line.strip():
                 self.assertIn(escape(line), svg)
 
 

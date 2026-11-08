@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The README opens with an animated terminal demo of the offline handoff, with its full text beside it, and
+  its setup section points to `relay doctor`. The demo is regenerated from a real `relay demo` run by
+  `scripts/make_demo_svg.py`.
 - `relay doctor` checks what a first handoff needs, one line per check with a fix for each problem:
   platform, Python, Git version and identity, repository, enrollment, remote access, `gh` installed
   and signed in, push access, `relay/state` readable, agent CLIs, the usage-limit hook, clock skew

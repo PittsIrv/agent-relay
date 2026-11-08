@@ -15,7 +15,7 @@ text{font:13px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",mo
 <text class="t2 out" x="22" y="104" xml:space="preserve">Two collaborators, two clones, one shared remote. GitHub is simulated offline.</text>
 <text class="t3 out" x="22" y="123" xml:space="preserve"></text>
 <text class="t4 step" x="22" y="142" xml:space="preserve">1. Alice works interactively in Claude Code. Mid-task, it hits the five-hour usage limit.</text>
-<text class="t5 out" x="22" y="161" xml:space="preserve">   The StopFailure hook (no model call) saved her uncommitted edit as e1b9f25</text>
+<text class="t5 out" x="22" y="161" xml:space="preserve">   The StopFailure hook (no model call) saved her uncommitted edit as 7f70ca0</text>
 <text class="t6 out" x="22" y="180" xml:space="preserve">   and opened issue #1. Alice's own branch and files are unchanged.</text>
 <text class="t7 out" x="22" y="199" xml:space="preserve"></text>
 <text class="t8 step" x="22" y="218" xml:space="preserve">2. Bob's worker is online with spare quota. It claims the task, continues Alice's code,</text>
@@ -30,21 +30,21 @@ text{font:13px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",mo
 <text class="t17 out" x="22" y="389" xml:space="preserve">    alice commented:</text>
 <text class="t18 out" x="22" y="408" xml:space="preserve">      ⏸ **alice's Claude Code session** stopped: usage limit reached.</text>
 <text class="t19 out" x="22" y="427" xml:space="preserve"></text>
-<text class="t20 out" x="22" y="446" xml:space="preserve">      Work saved at `e1b9f25` on `relay/checkpoints/8aae5ad4ca/1` (1 file changed, 3 insertions(+)).</text>
+<text class="t20 out" x="22" y="446" xml:space="preserve">      Work saved at `7f70ca0` on `relay/checkpoints/940c0cc5bb/1` (1 file changed, 3 insertions(+)).</text>
 <text class="t21 out" x="22" y="465" xml:space="preserve">      Touched: `answer.py`.</text>
 <text class="t22 out" x="22" y="484" xml:space="preserve"></text>
 <text class="t23 out" x="22" y="503" xml:space="preserve">      Up for grabs: the next available agent continues from this checkpoint.</text>
 <text class="t24 out" x="22" y="522" xml:space="preserve">    bob commented:</text>
-<text class="t25 out" x="22" y="541" xml:space="preserve">      🤖 **bob's simulated agent** picked this up (attempt 2), starting from the latest checkpoint `e1b9f25`.</text>
+<text class="t25 out" x="22" y="541" xml:space="preserve">      🤖 **bob's simulated agent** picked this up (attempt 2), starting from the latest checkpoint `7f70ca0`.</text>
 <text class="t26 out" x="22" y="560" xml:space="preserve">    bob commented:</text>
 <text class="t27 head" x="22" y="579" xml:space="preserve">      ✅ **bob's simulated agent** finished attempt 2. Local check: **passed**. Draft PR #2 is open for review.</text>
 <text class="t28 out" x="22" y="598" xml:space="preserve"></text>
-<text class="t29 out" x="22" y="617" xml:space="preserve">      Work saved at `f719927` on `relay/checkpoints/8aae5ad4ca/2` (1 file changed, 2 insertions(+)).</text>
+<text class="t29 out" x="22" y="617" xml:space="preserve">      Work saved at `f6e7ddf` on `relay/checkpoints/940c0cc5bb/2` (1 file changed, 2 insertions(+)).</text>
 <text class="t30 out" x="22" y="636" xml:space="preserve">      Touched: `answer.py`.</text>
 <text class="t31 out" x="22" y="655" xml:space="preserve"></text>
 <text class="t32 out" x="22" y="674" xml:space="preserve">      Nothing was merged. A person reviews and merges the PR.</text>
 <text class="t33 out" x="22" y="693" xml:space="preserve">    alice commented:</text>
-<text class="t34 head" x="22" y="712" xml:space="preserve">      🎉 PR #2 was merged. Task `8aae5ad4ca` is done; tasks waiting on it can start.</text>
-<text class="t35 head" x="22" y="731" xml:space="preserve">  Draft PR #2: relay: Implement answer() so it returns 42  (relay/checkpoints/8aae5ad4ca/2 -&gt; main)</text>
+<text class="t34 head" x="22" y="712" xml:space="preserve">      🎉 PR #2 was merged. Task `940c0cc5bb` is done; tasks waiting on it can start.</text>
+<text class="t35 head" x="22" y="731" xml:space="preserve">  Draft PR #2: relay: Implement answer() so it returns 42  (relay/checkpoints/940c0cc5bb/2 -&gt; main)</text>
 <text class="t36 out" x="22" y="750" xml:space="preserve"></text>
 </svg>

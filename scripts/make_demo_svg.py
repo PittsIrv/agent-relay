@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Regenerate the README's animated terminal demo from a real `relay demo` run.
 
-Usage: python scripts/make_demo_svg.py        (writes docs/assets/relay-demo.svg and docs/demo-transcript.txt)
+Usage: python scripts/make_demo_svg.py   (writes docs/assets/relay-demo.svg and docs/demo-transcript.txt,
+and replaces the transcript between the markers in README.md)
 
 Needs nothing but this checkout. The demo is offline and uses fake agents and a simulated GitHub,
 so the output contains no accounts. The script refuses to write if the output holds a local path.
 Lines appear one after another in a loop; with reduced motion requested, all lines show at once.
 """
 
+import os
 import re
 import subprocess
 import sys
@@ -21,15 +23,18 @@ CHAR = 7.85  # advance of the 13px monospace stack, close enough for the box wid
 
 def demo_lines():
     run = subprocess.run([sys.executable, "-m", "agent_relay", "demo"], cwd=ROOT, text=True, capture_output=True,
-                         env={"PYTHONPATH": str(ROOT / "src"), "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"})
+                         env={**os.environ, "PYTHONPATH": str(ROOT / "src")})
     if run.returncode:
         sys.exit(f"relay demo failed: {run.stderr[-300:]}")
     lines = run.stdout.rstrip("\n").splitlines()
     return [line for line in lines if not line.startswith("{") and not line.startswith("No model calls")]
 
 
+LOCAL = (r"/Users/", r"/home/\w", r"/var/folders", r"/private/", r"/tmp/", r"[A-Za-z]:\\", r"@[a-z0-9-]+\.[a-z]{2,}")
+
+
 def check_clean(text):
-    for pattern in (r"/Users/", r"/home/", r"/var/", r"/tmp/", r"/private/", r"[A-Za-z]:\\\\", r"@[a-z0-9-]+\.[a-z]{2,}"):
+    for pattern in LOCAL:
         if re.search(pattern, text):
             sys.exit(f"refusing to write: output matches {pattern!r}")
 
@@ -85,8 +90,13 @@ def main():
     check_clean(text)
     (ROOT / "docs" / "assets").mkdir(exist_ok=True)
     (ROOT / "docs" / "assets" / "relay-demo.svg").write_text(build(lines))
-    (ROOT / "docs" / "demo-transcript.txt").write_text("$ relay demo\n" + text + "\n")
-    print(f"wrote docs/assets/relay-demo.svg ({len(lines)} lines) and docs/demo-transcript.txt")
+    transcript = "$ relay demo\n" + text + "\n"
+    (ROOT / "docs" / "demo-transcript.txt").write_text(transcript)
+    readme = (ROOT / "README.md").read_text()
+    block = f"<!-- demo-transcript:start -->\n```text\n{transcript}```\n<!-- demo-transcript:end -->"
+    updated = re.sub(r"<!-- demo-transcript:start -->.*?<!-- demo-transcript:end -->", lambda _: block, readme, flags=re.S)
+    (ROOT / "README.md").write_text(updated)
+    print(f"wrote docs/assets/relay-demo.svg ({len(lines)} lines), docs/demo-transcript.txt and the README's transcript")
 
 
 if __name__ == "__main__":
