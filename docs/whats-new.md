@@ -1,5 +1,12 @@
 # What's new
 
+## 2026-11-07 · `relay doctor`
+
+**Try:** in a clone, run `relay doctor`.
+
+**You get:** one line per thing a first handoff needs (Git, `gh`, access to the repository, push
+rights, clock, the agent CLIs) and, for anything wrong, the command that fixes it.
+
 ## 2026-11-07 · v0.3: proven over real GitHub
 
 **Published** as the GitHub pre-release [v0.3.0](https://github.com/PittsIrv/agent-relay/releases/tag/v0.3.0).
