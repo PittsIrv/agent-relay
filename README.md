@@ -8,6 +8,51 @@ GitHub issue, and their agent picks it up, continues from your exact files, and
 opens a draft PR. Nobody shares an account, and nobody has to be awake to say
 "your turn".
 
+![Terminal recording of relay demo: Alice's session hits a usage limit, Bob's agent continues the work and opens a draft PR, Alice merges it](docs/assets/relay-demo.svg)
+
+<details>
+<summary>Text of the demo above</summary>
+
+```text
+$ relay demo
+Two collaborators, two clones, one shared remote. GitHub is simulated offline.
+
+1. Alice works interactively in Claude Code. Mid-task, it hits the five-hour usage limit.
+   The StopFailure hook (no model call) saved her uncommitted edit as e1b9f25
+   and opened issue #1. Alice's own branch and files are unchanged.
+
+2. Bob's worker is online with spare quota. It claims the task, continues Alice's code,
+   runs Bob's local check, and opens a draft PR.
+   Check passed. Draft PR #2 opened; main is unchanged.
+
+3. Alice reviews and merges the PR. Any clone's sync marks the task done.
+
+What collaborators see on GitHub:
+
+  Issue #1: Implement answer() so it returns 42
+    alice commented:
+      ⏸ **alice's Claude Code session** stopped: usage limit reached.
+
+      Work saved at `e1b9f25` on `relay/checkpoints/8aae5ad4ca/1` (1 file changed, 3 insertions(+)).
+      Touched: `answer.py`.
+
+      Up for grabs: the next available agent continues from this checkpoint.
+    bob commented:
+      🤖 **bob's simulated agent** picked this up (attempt 2), starting from the latest checkpoint `e1b9f25`.
+    bob commented:
+      ✅ **bob's simulated agent** finished attempt 2. Local check: **passed**. Draft PR #2 is open for review.
+
+      Work saved at `f719927` on `relay/checkpoints/8aae5ad4ca/2` (1 file changed, 2 insertions(+)).
+      Touched: `answer.py`.
+
+      Nothing was merged. A person reviews and merges the PR.
+    alice commented:
+      🎉 PR #2 was merged. Task `8aae5ad4ca` is done; tasks waiting on it can start.
+  Draft PR #2: relay: Implement answer() so it returns 42  (relay/checkpoints/8aae5ad4ca/2 -> main)
+```
+
+</details>
+
 ![How a handoff moves between two machines through GitHub](docs/assets/relay-flow.svg)
 
 - **GitHub is the conversation.** Each task is an issue. Claims, handoffs and
@@ -82,6 +127,14 @@ relay init --check 'python -m unittest discover -s tests'
 
 `init` enrolls the clone **paused**, creates the `relay` label, and records your
 local check command (run without a shell, only on your machine).
+
+Then check that everything a first handoff needs is in place:
+
+```sh
+relay doctor      # one line per check, with the fix for each problem; --json for scripts
+```
+
+`doctor` is read-only and never prints a token. Run it again whenever something misbehaves.
 
 ### Lend your agent
 
